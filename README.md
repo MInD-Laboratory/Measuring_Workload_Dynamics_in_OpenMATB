@@ -30,21 +30,24 @@ Performance logs from OpenMATB were parsed to extract task-specific accuracy and
 
 NASA-TLX questionnares were administed through OpenMATB at the end of each experimental (8-min) block. Those were extracted via performance/extract_nasa_tlx.py
 
-Statistics and figures reported for task performance measures can be found in stats_figs/validation_load.ipynb, which is broken up by topical subheading reported.
+Statistics and figures reported for task performance measures can be found in figures_stats/validation_load.ipynb, which is broken up by topical subheading reported.
 
 ### Pose Data
-1. First, raw pose data (70-keypoints from OpenPose https://github.com/CMU-Perceptual-Computing-Lab/openpose) was first collapsed into a set of meaningful regions using pose_analysis/preprocess_pose.py. 
+1. First, raw pose data (70-keypoints from OpenPose https://github.com/CMU-Perceptual-Computing-Lab/openpose) was first collapsed into a set of meaningful regions using analyze_pose/preprocess_pose.py. 
 
-2. Using those set of regions, linear metrics (velocity, acceleration, RMS) were calculated using process_pose/linear_pose.py
+2. Using those set of regions, linear metrics (velocity, acceleration, RMS) were calculated using analyze_pose/linear_pose.py
 
-3. AMI and FNN were calculated for RQA using process_pose/ami.py and fnn.py respectively to determine the right optimal embedding dimension and time lag
+3. AMI and FNN were calculated for RQA using analyze_pose/ami.py and fnn.py respectively to determine the right optimal embedding dimension and time lag
 
-4. AutoRQA was run using Recurrence-Quantification-Analysis toolbox using the script process_pose/rqa_pose.py
+4. AutoRQA was run using Recurrence-Quantification-Analysis toolbox using the script analyze_pose/rqa_pose.py
 
-5. CrossRQA between head-gaze was also run using Recurrence-Quantification-Analysis crossRQA function using the script under process_pose/crqa_pose.py
+5. CrossRQA between head-gaze was also run using Recurrence-Quantification-Analysis crossRQA function using the script under analyze_pose/crqa_pose.py
 
-6. The results (stats/figures) for 4.2 (Pose-Estimated Resulst) can be found in extras/pose_estimated_results.ipynb, which is broken up by thesis headings
+6. The results (stats/figures) for 4.2 (Pose-Estimated Resulst) can be found in figures_stats/pose_estimated_results.ipynb, which is broken up by thesis headings
 
 # Machine Learning Models
 Data taken from the above was used to train a series of random forest classifiers using scikit. Model selection for each model run is found in machine_learning.ipynb, using a custom function.
 The preset settings in each cell for each model are the ones reported, divided by topical headings. 
+
+# Publications
+Available upon request.
