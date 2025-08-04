@@ -1,3 +1,25 @@
+# Overview
+This repository contains scripts and analysis pipelines for a study investigating cognitive load using a multitasking simulation (OpenMATB, https://github.com/juliencegarra/OpenMATB), webcam-based pose tracking, and supervised machine learning. 
+
+## 🔧 Setup Instructions
+
+### 0. Clone the repository  
+git clone https://github.com/MInD-Laboratory/matb_rqa_workload
+cd matb_rqa_workload
+
+### 1. Download data from OSF
+Download the folder data from https://osf.io/dzgsv/. Place inside the 
+
+### 2. Create a virtual environment and install dependencies 
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+
+## Accuracy and Reaction Time
+ Performance logs from OpenMATB were parsed to extract task-specific accuracy and reaction times for the four subtasks (Monitoring, Tracking, Communications, Resource Management). Script: performance/matb_point_accuracy.py
+
+
 Baseline refers to the 2-minute blocks administered prior to the experimental 8-minute blocks. 
 I’ve attempted to rename all relevant paths from pre and main to baseline and experimental, 
 but there may be some remnants I missed. For clarity: baseline = 2-min block, experimental = 8-min block.
