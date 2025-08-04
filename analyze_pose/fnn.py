@@ -8,8 +8,8 @@ import random
 from scipy.stats import zscore
 from scipy.spatial import KDTree
 
-
-# Embedding the time series based on dimension and lag
+# This function rearranges the time series data into a format needed for analysis.
+# It creates "embedded" versions of the data, which help reveal hidden patterns.
 def embed_time_series(data, embedding_dim, lag):
     data_length = len(data) - (embedding_dim - 1) * lag
     embedded = np.zeros((data_length, embedding_dim))
@@ -17,46 +17,49 @@ def embed_time_series(data, embedding_dim, lag):
         embedded[:, c] = data[c * lag : c * lag + data_length]
     return embedded
 
+# This function calculates the percentage of "False Nearest Neighbours" (FNN) for different dimensions.
+# FNN helps decide how many variables are needed to describe the system's behavior.
 def fnn(timeseries, tlag, min_dimension, max_dimension):
-    # Ensure the input is a NumPy array
+    # Make sure the input data is in the right format
     if isinstance(timeseries, (pd.Series, pd.DataFrame)):
-        timeseries = timeseries.values.flatten()  # Convert to 1D NumPy array if it's a Series or DataFrame
+        timeseries = timeseries.values.flatten()  # Convert to a simple array
     elif not isinstance(timeseries, np.ndarray):
         raise ValueError("Input timeseries must be a NumPy array or Pandas Series/DataFrame")
     
-    # Preprocess the time series
     time_series = np.array(timeseries)
 
     percent = np.ones(max_dimension - min_dimension + 1)
 
-    # Mean and radius of the attractor
+    # Calculate the average value and spread of the data
     mean_x = np.mean(time_series)
     Ra = np.sqrt(np.mean((time_series - mean_x) ** 2))
 
-    # Embedding dimensions to check
+    # List of dimensions to test
     de = np.arange(min_dimension, max_dimension + 1)
     
+    # For each dimension, check how many points have "false" neighbors
     for c in tqdm(de, desc="Processing FNN"):
         number_false = 0
         max_l = len(time_series) - c * tlag
 
-        # Embed the time series
+        # Rearrange the data for this dimension
         curr_embedding = embed_time_series(time_series, c, tlag)
 
-        # Build KDTree for nearest neighbor search
+        # Build a KDTree to quickly find nearest neighbors
         tree = KDTree(curr_embedding)
 
         for c2 in range(max_l):
-            # Search for the nearest neighbor
-            dist, NN = tree.query(curr_embedding[c2], k=2)  # Nearest neighbor excluding itself
-            nearest_d = dist[1]  # Exclude self, take the second closest
-            NN = NN[1]
+            # Find the nearest neighbor (excluding itself)
+            dist, NN = tree.query(curr_embedding[c2], k=2)
+            nearest_d = dist[1]  # Distance to the nearest neighbor
+            NN = NN[1]           # Index of the nearest neighbor
 
             if NN >= max_l:
-                # If NN is beyond available data, assume not false
+                # If the neighbor is out of bounds, skip
                 test_stat1 = 0
                 test_stat2 = 0
             else:
+                # Calculate how different the neighbor is in the next dimension
                 if nearest_d == 0:
                     test_stat1 = 1
                 else:
@@ -64,44 +67,50 @@ def fnn(timeseries, tlag, min_dimension, max_dimension):
                 
                 test_stat2 = np.abs(time_series[c2 + c * tlag] - time_series[NN + c * tlag]) / Ra
 
-            # Use Abarbanel's criteria: test_stat1 >= 15 or test_stat2 >= 2
+            # If either test is true, count as a false neighbor
             number_false += ((test_stat1 >= 15) | (test_stat2 >= 2))
 
         percent[c - min_dimension] = number_false / max_l
 
+    # Return the dimensions tested and the percentage of false neighbors for each
     return de, percent * 100
 
 # ── Parameters ─────────────────────────────────────────────────────
-ROOT_DIR       = ""
-N_FILES_TO_USE = 100          # cap files to scan
-N_SERIES       = 100          # how many random (file,col) pairs
-MIN_DIM, MAX_DIM = 1, 10
-TAU            = 20
-SEED           = 42
-FIG_DIR        = "figures"
+ROOT_DIR       = ""             # Folder with data files (set this to your data location)
+N_FILES_TO_USE = 100            # Only look at up to 100 files
+N_SERIES       = 100            # Analyze 100 random data series
+MIN_DIM, MAX_DIM = 1, 10        # Range of dimensions to test
+TAU            = 20             # Time lag to use
+SEED           = 42             # Random seed for reproducibility
+FIG_DIR        = "figures"      # Where to save the plots
 os.makedirs(FIG_DIR, exist_ok=True)
+
 # ── BUILD POOL OF VALID (file, col) PAIRS ──────────────────────────
+# Find all CSV files in the folder
 csv_files = sorted(f for f in os.listdir(ROOT_DIR) if f.endswith(".csv"))[:N_FILES_TO_USE]
-pool = []      # (path, col)
+pool = []      # List of (file path, column name) pairs
 
 for fname in tqdm(csv_files, desc="Scanning files"):
     fpath = os.path.join(ROOT_DIR, fname)
-    head  = pd.read_csv(fpath, nrows=5)
+    head  = pd.read_csv(fpath, nrows=5)  # Read just the first few rows to get column info
+    # Only use columns with numbers, and skip probability columns
     cols  = [c for c in head.select_dtypes(include=[np.number]).columns
              if not c.endswith("_prob")]
     for col in cols:
+        # Only use columns with enough data points
         npts = pd.read_csv(fpath, usecols=[col])[col].dropna().shape[0]
         if npts >= (MAX_DIM + 1) * TAU:
             pool.append((fpath, col))
 
+# If not enough usable series are found, stop the program
 if len(pool) < N_SERIES:
     raise RuntimeError(f"Only {len(pool)} usable series; need {N_SERIES}")
 
 random.seed(SEED)
-sampled = random.sample(pool, N_SERIES)
+sampled = random.sample(pool, N_SERIES)  # Pick 100 random (file, column) pairs
 
 # ── RUN FNN ON THE SAMPLED SERIES ──────────────────────────────────
-fnn_curves = []      # list of 1-D arrays (len = MAX_DIM-MIN_DIM+1)
+fnn_curves = []      # Store the FNN results for each series
 
 for fpath, col in tqdm(sampled, desc="FNN series"):
     s = pd.read_csv(fpath, usecols=[col])[col].dropna().values
@@ -110,9 +119,9 @@ for fpath, col in tqdm(sampled, desc="FNN series"):
                      max_dimension=MAX_DIM)
     fnn_curves.append(vals)
 
-fnn_mat   = np.vstack(fnn_curves)        # shape → (100, n_dims)
-mean_fnn  = fnn_mat.mean(axis=0)
-# sem_fnn   = fnn_mat.std(axis=0, ddof=1) / math.sqrt(fnn_mat.shape[0])
+fnn_mat   = np.vstack(fnn_curves)        # Combine all results into one big table
+mean_fnn  = fnn_mat.mean(axis=0)         # Average FNN percentage for each dimension
+# sem_fnn   = fnn_mat.std(axis=0, ddof=1) / math.sqrt(fnn_mat.shape[0])  # Standard error (optional)
 
 # ── PLOT MEAN ± 1 SEM ──────────────────────────────────────────────
 fig, ax = plt.subplots()
@@ -125,8 +134,9 @@ ax.set_title(f"FNN (100 random series across {len(csv_files)} files)")
 ax.grid(True)
 ax.legend()
 
+# Save the plot as PNG and SVG images
 png = os.path.join(FIG_DIR, "fnn_avg.png")
 svg = os.path.join(FIG_DIR, "fnn_avg.svg")
 fig.savefig(png, dpi=300, bbox_inches="tight")
 fig.savefig(svg,           bbox_inches="tight")
-print(f"Figure saved → {png} & {svg}")
+print(f"Figure saved →
