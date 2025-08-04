@@ -160,4 +160,4 @@ def main():
     print(f"✓ Wrote {len(average_rows)} averaged rows to: {args.output_average}")
 
 if __name__ == '__main__':
-    # Run the main function if this file is executed directly
+    main()
