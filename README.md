@@ -1,4 +1,5 @@
-<img width="1920" height="1057" alt="image" src="https://github.com/user-attachments/assets/e10eae4a-3f3a-4eb3-8e6b-4615cafecd73" />
+
+<img width="2165" height="1067" alt="matb_figures" src="https://github.com/user-attachments/assets/d87d867b-481a-4840-9004-9bcdcf2f0a12" />
 
 # Overview
 This repository contains scripts and analysis pipelines for a study investigating cognitive load using a multitasking simulation (OpenMATB, https://github.com/juliencegarra/OpenMATB), webcam-based pose tracking, and supervised machine learning. 
