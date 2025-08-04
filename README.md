@@ -33,6 +33,45 @@ NASA-TLX questionnares were administed through OpenMATB at the end of each exper
 Statistics and figures reported for task performance measures can be found in figures_stats/validation_load.ipynb, which is broken up by topical subheading reported.
 
 ### Pose Data
+Step 1: Preprocessing
+
+    Raw OpenPose data (70 keypoints) → mapped to body regions.
+
+    Script: analyze_pose/preprocess_pose.py
+
+Step 2: Linear Metrics
+
+    Features: Velocity, Acceleration, Root Mean Square (RMS).
+
+    Script: analyze_pose/linear_pose.py
+
+Step 3: Nonlinear Feature Setup (AMI + FNN)
+
+    Calculate:
+
+        Average Mutual Information (AMI) to estimate time lag.
+
+        False Nearest Neighbors (FNN) to estimate embedding dimension.
+
+    Scripts: analyze_pose/ami.py, analyze_pose/fnn.py
+
+Step 4: Recurrence Quantification Analysis (RQA)
+
+    Script: analyze_pose/rqa_pose.py
+
+    Toolbox: RQA Toolbox
+
+Step 5: Cross-Recurrence (CRQA)
+
+    Gaze-head movement cross-recurrence metrics.
+
+    Script: analyze_pose/crqa_pose.py
+
+Step 6: Statistical Analysis
+
+    Refer to figures_stats/pose_estimated_results.ipynb, organized by thesis subheadings.
+
+
 1. First, raw pose data (70-keypoints from OpenPose https://github.com/CMU-Perceptual-Computing-Lab/openpose) was first collapsed into a set of meaningful regions using analyze_pose/preprocess_pose.py. 
 
 2. Using those set of regions, linear metrics (velocity, acceleration, RMS) were calculated using analyze_pose/linear_pose.py
