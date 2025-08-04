@@ -1,3 +1,6 @@
+# This script calculates accuracy and response times for different tasks in the MATB experiment.
+# It reads event logs, scores performance, and saves results to a CSV file.
+
 #!/usr/bin/env python3
 import os, sys, glob, csv, argparse
 from datetime import datetime
@@ -5,7 +8,7 @@ from statistics import mean
 from collections import defaultdict, Counter
 from tqdm import tqdm
 
-# Load order map
+# Load the experiment order file, which tells us the condition order for each participant
 orders_path = 'extras/exp4_orders.csv'
 order_map = {}
 with open(orders_path, newline='', encoding='utf-8-sig') as f:
@@ -16,7 +19,7 @@ with open(orders_path, newline='', encoding='utf-8-sig') as f:
     for row in rdr:
         order_map[row['ID']] = row['Order']
 
-
+# Define which event types and addresses we care about for scoring
 TRACK_ADDR   = {"cursor_in_target"}
 RESMAN_ADDR  = {"a_in_tolerance", "b_in_tolerance"}
 SYSMON_ADDR  = {"signal_detection","response_time"}
@@ -24,6 +27,7 @@ VALID_MODS   = {"track", "resman", "sysmon", "communications"}
 ADDRS        = TRACK_ADDR | RESMAN_ADDR | SYSMON_ADDR
 
 def read_csv_events(path):
+    # Read a CSV file and extract performance, prompt, and keypress events
     parts = os.path.splitext(os.path.basename(path))[0].split('_')
     dt0 = datetime.strptime(parts[-2] + parts[-1], '%y%m%d%H%M%S')
     perf, prompts, keys = [], [], []
@@ -38,11 +42,14 @@ def read_csv_events(path):
             addr= row['address'].strip()
             t   = float(row.get('scenario_time', 0))
             val = row['value'].strip()
+            # Performance events for scoring
             if typ=='performance' and mod in VALID_MODS and addr in ADDRS:
                 perf.append({'mod':mod, 'addr':addr, 'val':val, 't':t})
+            # Communication prompts (own/other)
             if typ=='event' and mod=='communications' and addr=='radioprompt':
                 if val in ('own','other'):
                     prompts.append({'t':t, 'kind':val})
+            # Keypress events (spacebar or joystick button)
             if typ=='input' and (
                 (mod=='keyboard' and addr=='SPACE') or
                 (mod=='joystick' and addr.startswith('JOY_BTN_'))
@@ -51,6 +58,7 @@ def read_csv_events(path):
     return dt0, perf, prompts, keys
 
 def pair_keys(keys):
+    # Match key press and release events to measure how long a key was held down
     keys = sorted(keys, key=lambda x: x['t'])
     pairs = []
     i = 0
@@ -72,20 +80,22 @@ def pair_keys(keys):
     return pairs
 
 def compute_point_metrics(perf, prompts, keys):
-    # Tracking: cursor_in_target
+    # Calculate accuracy and response times for each task
+
+    # Tracking: % of time cursor was in the target
     cursor_vals = [int(r['val']) for r in perf if r['mod']=='track' and r['addr']=='cursor_in_target']
     track_score = sum(cursor_vals)
     track_total = len(cursor_vals)
     track_point_accuracy = track_score / track_total if track_total else 0.0
 
-    # ResMan: a_in_tolerance, b_in_tolerance
+    # Resource Management: % of time both resources were in tolerance
     a_vals = [int(r['val']) for r in perf if r['mod']=='resman' and r['addr']=='a_in_tolerance']
     b_vals = [int(r['val']) for r in perf if r['mod']=='resman' and r['addr']=='b_in_tolerance']
     resman_score = sum(a_vals) + sum(b_vals)
     resman_total = len(a_vals) + len(b_vals)
     resman_point_accuracy = resman_score / resman_total if resman_total else 0.0
 
-    # SysMon: signal_detection
+    # System Monitoring: hits minus false alarms, divided by total
     sysmon_labels = [r['val'].lower() for r in perf if r['mod']=='sysmon' and r['addr']=='signal_detection']
     hits = sysmon_labels.count('hit')
     fas  = sysmon_labels.count('fa')
@@ -93,7 +103,7 @@ def compute_point_metrics(perf, prompts, keys):
     sysmon_total = len(sysmon_labels)
     sysmon_point_accuracy = sysmon_score / sysmon_total if sysmon_total else 0.0
 
-    # SysMon: reaction_time
+    # System Monitoring: average reaction time
     rt_vals = [float(r['val'])
             for r in perf
             if r['mod']=='sysmon'
@@ -101,7 +111,7 @@ def compute_point_metrics(perf, prompts, keys):
             and r['val'].replace('.','',1).isdigit()]
     mean_sysmon_rt = mean(rt_vals) if rt_vals else 0.0
 
-    # Comms
+    # Communications: score and response time based on prompts and keypresses
     key_pairs = pair_keys(keys)
     hits = miss = fa = 0
     comm_rts = []
@@ -129,6 +139,7 @@ def compute_point_metrics(perf, prompts, keys):
     return track_point_accuracy, resman_point_accuracy, sysmon_point_accuracy, comms_point_accuracy, mean_sysmon_rt, mean_comms_rt
 
 def main():
+    # Set up command-line arguments for input/output files and binning options
     p = argparse.ArgumentParser()
     p.add_argument('input_dir')
     p.add_argument('output_csv')
@@ -138,7 +149,7 @@ def main():
                help='Overlap percentage for bins (e.g., 50 for 50%% overlap)')
     args = p.parse_args()
 
-
+    # Find all relevant CSV files in the input directory
     files = [
         f for f in glob.glob(os.path.join(args.input_dir, '*.csv'))
         if '_block_' in os.path.basename(f)
@@ -147,6 +158,7 @@ def main():
 
     rows = []
     for path in tqdm(files, desc='Scoring', colour='green'):
+        # Get participant, session, and condition info from filename and order map
         parts = os.path.splitext(os.path.basename(path))[0].split('_')
         part, ses = parts[0], parts[1]
         block = int(parts[parts.index('block')+1])
@@ -159,20 +171,24 @@ def main():
             continue
         condition = order_str[block - 1]
 
-
+        # Read all events from the file
         dt0, perf, prompts, keys = read_csv_events(path)
 
+        # Find the latest time in the file to set bin edges
         max_time = max([r['t'] for r in perf] + [p['t'] for p in prompts] + [k['t'] for k in keys], default=0)
 
         if args.bin_size:
+            # If binning is requested, divide the data into overlapping time bins
             step = int(args.bin_size * (1 - args.bin_overlap / 100))
             bin_edges = list(range(0, int(max_time) - args.bin_size + 1, step))
             for b_start in bin_edges:
                 b_end = b_start + args.bin_size
+                # Only use events that fall within this bin
                 b_perf = [r for r in perf if b_start <= r['t'] < b_end]
                 b_prompts = [p for p in prompts if b_start <= p['t'] < b_end]
                 b_keys = [k for k in keys if b_start <= k['t'] < b_end]
 
+                # Score performance for this bin
                 track, resman, sysmon, comms, mean_sysmon_rt, mean_comms_rt = \
                     compute_point_metrics(b_perf, b_prompts, b_keys)
 
@@ -191,6 +207,7 @@ def main():
                 }
                 rows.append(row)
         else:
+            # If no binning, score the whole file as one block
             track, resman, sysmon, comms, mean_sysmon_rt, mean_comms_rt = \
                 compute_point_metrics(perf, prompts, keys)
             rows.append({
@@ -205,7 +222,7 @@ def main():
                 'mean_comms_response_time':    mean_comms_rt,
             })
 
-
+    # Write all results to a CSV file
     with open(args.output_csv, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=[
             'participant', 'session', 'condition', 'bin_start', 'bin_end',
@@ -219,6 +236,8 @@ def main():
     print(f"\nWrote {len(rows)} rows to {args.output_csv}")
 
 if __name__ == '__main__':
+    # Run the main function if this file is executed directly
     main()
 
-# python matb_point_accuracy.py ./input_dir output_point_accuracy.csv --bin-size 60 --bin-overlap 50
+# Example usage:
+# python matb_point_accuracy.py ./input_dir output_point_accuracy.csv --bin-size 60 --bin-
