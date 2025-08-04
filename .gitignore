@@ -1,5 +1,6 @@
 data/
 figs/
+extra/
 __pycache__/
 *.pyc
 *.pyo
