@@ -10,16 +10,18 @@ Linear and nonlinear analysis is performed on the pose data. Nonlinear analysis 
 
 ### 0. Clone the repository  
 git clone https://github.com/MInD-Laboratory/matb_rqa_workload
+
 cd matb_rqa_workload
 
 ### 1. Download data from OSF
-Download the folder data from https://osf.io/dzgsv/. Baseline refers to the 2-minute blocks administered prior to the experimental 8-minute blocks. 
-Place inside the matb_rqa_workload directory
+Download the folder data from https://osf.io/dzgsv/. Baseline refers to the 2-minute blocks administered prior to the experimental 8-minute blocks.
+
+Place inside the matb_rqa_workload directory.
 
 ### 2. Create a virtual environment and install dependencies 
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+- python -m venv venv
+- source venv/bin/activate
+- pip install -r requirements.txt
 
 ### 3. Perform the following steps for each analysis as detailed below
 
@@ -44,10 +46,11 @@ Statistics and figures reported for task performance measures can be found in fi
 
 5. CrossRQA between head-gaze was also run using Recurrence-Quantification-Analysis crossRQA function using the script under analyze_pose/crqa_pose.py
 
-6. The results (stats/figures) for 4.2 (Pose-Estimated Resulst) can be found in figures_stats/pose_estimated_results.ipynb, which is broken up by thesis headings
+6. The results (stats/figures) for 4.2 (Pose-Estimated Results) can be found in figures_stats/pose_estimated_results.ipynb, which is broken up by thesis headings
 
 # Machine Learning Models
 Data taken from the above was used to train a series of random forest classifiers using scikit. Model selection for each model run is found in machine_learning.ipynb, using a custom function.
+
 The preset settings in each cell for each model are the ones reported, divided by topical headings. 
 
 # Publications
