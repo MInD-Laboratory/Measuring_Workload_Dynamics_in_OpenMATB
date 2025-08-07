@@ -2,9 +2,11 @@
 <img width="2165" height="1067" alt="matb_figures" src="https://github.com/user-attachments/assets/d87d867b-481a-4840-9004-9bcdcf2f0a12" />
 
 # Overview
-This repository contains scripts and analysis pipelines for a study investigating cognitive load using a multitasking simulation (OpenMATB, https://github.com/juliencegarra/OpenMATB), webcam-based pose tracking, and supervised machine learning. 
+This repository contains scripts and analysis pipelines for a study investigating cognitive load using a modified version of the Open Multi-Attribute Task Battery (OpenMATB; https://github.com/juliencegarra/OpenMATB), webcam-based pose tracking, and supervised machine learning.
 
-Linear and nonlinear analysis is performed on the pose data. Nonlinear analysis (Recurrence-Quantification-Analysis) is performed using https://github.com/xkiwilabs/Recurrence-Quantification-Analysis. 
+Participants engaged in four simultaneous subtasks—system monitoring, joystick-based tracking, verbal communications, and resource management—designed to simulate multitasking under varying levels of cognitive load. Load was manipulated across low, moderate, and high conditions by adjusting task difficulty parameters, such as anomaly frequency, target radius size, prompt rate, and fuel leakage. While performing the task, participants were recorded via webcam, providing data for subsequent behavioral analysis.
+
+Linear and nonlinear analyses were applied to the pose data. Nonlinear dynamics were assessed using Recurrence Quantification Analysis (RQA) via the Recurrence-Quantification-Analysis toolbox.
 
 ## 🔧 Setup Instructions
 
