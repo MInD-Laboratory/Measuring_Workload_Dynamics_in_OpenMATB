@@ -25,6 +25,8 @@ Place inside the matb_rqa_workload directory.
 - source venv/bin/activate
 - pip install -r requirements.txt
 
+Note: For RQA-related analyses, you must also install the dependencies required by the Recurrence-Quantification-Analysis toolbox. Follow the setup instructions provided in their README to ensure compatibility.
+
 ### 3. Perform the following steps for each analysis as detailed below
 
 ## MATB Task Performance Data
