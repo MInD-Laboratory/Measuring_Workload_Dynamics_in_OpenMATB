@@ -115,6 +115,6 @@ def process_data(input_dir, output_dir):
 
 if __name__ == "__main__":
     # Set where to find the raw data and where to save the processed data
-    input_directory = '/Users/cartersale/Library/CloudStorage/OneDrive-MacquarieUniversity/Research/Data/MATB_Exp4_Raw/raw_pose_csv'
-    output_directory = 'data/pose/experimental_pose'
+    input_directory = 'data/pose/experimental_pose'
+    output_directory = 'data/preprocessed_pose/experimental_pose'
     process_data(input_directory,

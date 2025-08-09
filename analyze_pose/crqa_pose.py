@@ -2,13 +2,11 @@ import os
 import sys
 import pandas as pd
 from tqdm import tqdm
-# Add a folder to the system path so we can use custom analysis tools
-sys.path.append(os.path.abspath("/Users/cartersale/Library/CloudStorage/OneDrive-MacquarieUniversity/Research/Projects/2025_MATBExp4/03_Analysis"))  
 from rqa.utils import norm_utils, rqa_utils_cpp
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-ROOT_DIR        = "/Users/cartersale/Library/CloudStorage/OneDrive-MacquarieUniversity/Research/Projects/2025_MATBExp4/02_Data/pose/pre_filtered_keypoints_nozscore"
-OUT_CSV        = "/Users/cartersale/Documents/nature_matb_submission/data/rqa/crqa_head_eye_bsl.csv"
+ROOT_DIR        = "data/preprocessed_pose/experimental_pose" # change to baseline_pose if needed
+OUT_CSV        = "data/rqa/crqa_head_eye.csv" 
 SAMPLE_RATE_HZ = 60        # How many data points per second (frames per second)
 WIN_SECONDS    = 60        # How long each analysis window is (in seconds)
 OVERLAP_FRAC   = 0.5       # How much windows overlap (50%)

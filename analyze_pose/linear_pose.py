@@ -6,7 +6,7 @@ from tqdm import tqdm
 from scipy.signal import detrend as scipy_detrend
 
 # Set up where the data is and how to process it
-DATA_DIR = "data/pose/baseline_pose"   # Folder containing the data files
+DATA_DIR = "data/preprocessed_pose/experimental_pose"   # Folder containing the data files, change to /baseline_pose if needed
 FPS = 60                               # Frames per second (how often data is recorded)
 WINDOW_SECONDS = 60                    # Length of each analysis window in seconds
 WINDOW_FRAMES = WINDOW_SECONDS * FPS   # Number of frames in each window

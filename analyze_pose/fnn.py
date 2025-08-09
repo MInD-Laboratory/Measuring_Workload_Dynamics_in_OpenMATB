@@ -76,7 +76,7 @@ def fnn(timeseries, tlag, min_dimension, max_dimension):
     return de, percent * 100
 
 # ── Parameters ─────────────────────────────────────────────────────
-ROOT_DIR       = ""             # Folder with data files (set this to your data location)
+ROOT_DIR       = "data/preprocessed_pose/experimental_pose"             # Folder with data files (set this to your data location), change to data/preprocessed_pose/baseline_pose if needed
 N_FILES_TO_USE = 100            # Only look at up to 100 files
 N_SERIES       = 100            # Analyze 100 random data series
 MIN_DIM, MAX_DIM = 1, 10        # Range of dimensions to test

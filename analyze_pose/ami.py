@@ -72,7 +72,7 @@ def ami(timeseries, min_lag, max_lag):
     return ami_result  # Return the results
 
 # ── Parameters ─────────────────────────────────────────────────────
-ROOT_DIR = "data/pose/experimental_pose"  # Folder containing data files
+ROOT_DIR = "data/preprocessed_pose/experimental_pose"  # Folder containing data files, change to baseline_pose if needed
 TARGET_COLUMNS = [
     "avg_pupil_x"  # Which column in the data to analyze
 ]
