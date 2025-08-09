@@ -6,7 +6,7 @@ This repository contains scripts and analysis pipelines for a study investigatin
 
 Participants engaged in four simultaneous subtasks—system monitoring, joystick-based tracking, verbal communications, and resource management—designed to simulate multitasking under varying levels of cognitive load. The task was structured into two phases: a baseline phase with three 2-minute blocks, and an experimental phase with three 8-minute blocks. Load was manipulated across low, moderate, and high conditions by adjusting task difficulty parameters such as anomaly frequency, target radius size, prompt rate, and fuel leakage. While performing the task, participants were recorded via webcam, providing data for subsequent behavioral analysis.
 
-Linear and nonlinear analyses were applied to the pose data. Nonlinear dynamics were assessed using Recurrence Quantification Analysis (RQA) via the Recurrence-Quantification-Analysis toolbox.
+Linear and nonlinear analyses were applied to the pose data. Nonlinear dynamics were assessed using Recurrence Quantification Analysis (RQA) via the Recurrence-Quantification-Analysis toolbox. Features from these analyses were used to train Random Forest models to classify workload condition. 
 
 ## 🔧 Setup Instructions
 
