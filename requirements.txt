@@ -23,7 +23,6 @@ et_xmlfile==2.0.0
 executing==2.2.0
 fastjsonschema==2.21.1
 filelock==3.17.0
-fixed_rec @ file:///Users/cartersale/Documents/matb-master/fixed_rec
 fonttools==4.56.0
 fqdn==1.5.1
 fsspec==2025.2.0
@@ -123,7 +122,6 @@ requests==2.32.3
 rfc3339-validator==0.1.4
 rfc3986-validator==0.1.1
 rpds-py==0.23.1
-rqa_analysis @ file:///Users/cartersale/Documents/matb-master/rqa
 rstr==3.2.2
 scikit-learn==1.6.1
 scipy==1.15.2
