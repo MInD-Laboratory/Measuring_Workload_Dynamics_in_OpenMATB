@@ -56,4 +56,5 @@ Data taken from the above was used to train a series of random forest classifier
 The preset settings in each cell for each model are the ones reported, divided by topical headings. 
 
 # Publications
-Available upon request.
+- Thesis: *Detecting Cognitive Load Through the Structure of Behavior: An Ecological-Dynamical Approach* (in preparation), Macquarie University, Expected Aug 2025.
+- Manuscript: *Facial Movement Dynamics Reveal Workload During Complex Multitasking* — submitted to [Nature Communications], 2025.
