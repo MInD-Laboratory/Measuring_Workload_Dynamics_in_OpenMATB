@@ -16,9 +16,7 @@ git clone https://github.com/MInD-Laboratory/matb_rqa_workload
 cd matb_rqa_workload
 
 ### 1. Download data from OSF
-Download the folder data from https://osf.io/dzgsv/. Baseline refers to the 2-minute blocks administered prior to the experimental 8-minute blocks.
-
-Place inside the matb_rqa_workload directory.
+Download the raw pose data from https://osf.io/dzgsv/ and place it in the data/ folder inside the matb_rqa_workload directory. The folder contains 70-keypoint OpenPose output. Before running any analysis scripts, preprocess the raw data by running analyze_pose/preprocess_pose.py. This will generate usable pose data and save it to: data/preprocessed_pose/experimental/ for experimental 8-minute blocks and data/preprocessed_pose/baseline/ for baseline 2-minute blocks. All scripts that reference data/preprocessed_pose/ expect the data in this processed form.
 
 ### 2. Create a virtual environment and install dependencies 
 - python -m venv venv
