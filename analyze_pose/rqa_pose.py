@@ -1,20 +1,15 @@
 import os
-import sys
-# Add a folder to the system path so we can use custom analysis tools
-sys.path.append(os.path.abspath("/Users/cartersale/Library/CloudStorage/OneDrive-MacquarieUniversity/Research/Projects/2025_MATBExp4/03_Analysis"))  
-import glob
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from scipy.stats import zscore
 from scipy.signal import detrend as scipy_detrend
 import math
 from rqa.utils import rqa_utils_cpp, norm_utils
 import seaborn as sns
 
 # ── SETTINGS ───────────────────────────────────────────────────────
-ROOT_DIR        = "data/pose/baseline_pose"      # Where the data files are
-OUT_CSV         = "data/rqa/baseline_pose_rqa.csv"  # Where to save results
+ROOT_DIR        = "data/pose/experimental_pose"      # Where the data files are
+OUT_CSV         = "data/rqa/experimental_pose_rqa.csv"  # Where to save results
 
 SAMPLE_RATE_HZ  = 60                      # How many data points per second
 WIN_SECONDS     = 60                      # Length of each analysis window (seconds)
@@ -33,7 +28,7 @@ TARGET_COLUMNS  = [                       # Which measurements to analyze
 
 # Parameters for the RQA analysis
 PARAMS = {                                
-    "norm": 1,           # How to normalize the data
+    "norm": 1,           # How to normalize the data (1 is unit interval)
     "eDim": 4,           # Embedding dimension
     "tLag": 20,          # Time lag
     "rescaleNorm": 1,    # Whether to rescale distances
@@ -132,5 +127,5 @@ def main():
         print("\n😐  No results generated.")
 
 if __name__ == "__main__":
-    # Run the main function if this file
+    # Run the main function if this file is executed directly
     main()
