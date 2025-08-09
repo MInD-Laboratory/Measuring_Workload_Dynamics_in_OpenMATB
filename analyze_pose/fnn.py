@@ -139,4 +139,3 @@ png = os.path.join(FIG_DIR, "fnn_avg.png")
 svg = os.path.join(FIG_DIR, "fnn_avg.svg")
 fig.savefig(png, dpi=300, bbox_inches="tight")
 fig.savefig(svg,           bbox_inches="tight")
-print(f"Figure saved →

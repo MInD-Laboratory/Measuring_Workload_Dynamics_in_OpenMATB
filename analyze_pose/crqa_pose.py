@@ -115,3 +115,4 @@ def main():
 
 # Run the main function if this file is executed directly
 if __name__ == "__main__":
+    main()

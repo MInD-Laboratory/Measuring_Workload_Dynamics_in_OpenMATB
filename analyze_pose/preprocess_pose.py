@@ -117,4 +117,4 @@ if __name__ == "__main__":
     # Set where to find the raw data and where to save the processed data
     input_directory = 'data/pose/experimental_pose'
     output_directory = 'data/preprocessed_pose/experimental_pose'
-    process_data(input_directory,
+    process_data(input_directory,output_directory)
