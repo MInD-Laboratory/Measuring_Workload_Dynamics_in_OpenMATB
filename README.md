@@ -23,7 +23,7 @@ Download the raw pose data from https://osf.io/dzgsv/ and place it in the data/ 
 - source venv/bin/activate
 - pip install -r requirements.txt
 
-Note: For RQA-related analyses, you must also install the dependencies required by the Recurrence-Quantification-Analysis toolbox. Follow the setup instructions provided in their README to ensure compatibility.
+Note: For RQA-related analyses, you must also install the dependencies required by the Recurrence-Quantification-Analysis toolbox. Follow the setup instructions provided in their README to ensure compatibility. https://github.com/xkiwilabs/Recurrence-Quantification-Analysis 
 
 ### 3. Perform the following steps for each analysis as detailed below
 
@@ -56,5 +56,5 @@ Data taken from the above was used to train a series of random forest classifier
 The preset settings in each cell for each model are the ones reported, divided by topical headings. 
 
 # Publications
-- Thesis: *Detecting Cognitive Load Through the Structure of Behavior: An Ecological-Dynamical Approach* (in preparation), Macquarie University, Expected Aug 2025.
-- Manuscript: *Facial Movement Dynamics Reveal Workload During Complex Multitasking* — submitted to [Nature Communications], 2025.
+- Thesis: *Detecting Cognitive Load Through the Structure of Behavior: An Ecological-Dynamical Approach* (submitted), Macquarie University, Expected Aug 2025.
+- Manuscript: *Facial Movement Dynamics Reveal Workload During Complex Multitasking* — submitted, 2025.
