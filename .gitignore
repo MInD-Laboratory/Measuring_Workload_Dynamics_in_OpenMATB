@@ -9,3 +9,4 @@ __pycache__/
 .ipynb_checkpoints/
 .vscode/
 data/model_output/results
+data/test_preprocessed_pose
