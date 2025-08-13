@@ -1,5 +1,6 @@
 data/preprocessed_pose
-figs/
+data/raw_pose
+figs/backup/
 extra/
 __pycache__/
 *.pyc
