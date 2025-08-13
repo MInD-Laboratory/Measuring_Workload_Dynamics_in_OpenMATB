@@ -1,0 +1,17 @@
+file,metric,window_index,start_frame,end_frame_exclusive
+412_L.csv,eyes,0,0,1800
+412_L.csv,center_face,0,0,1800
+434_L.csv,center_face,0,0,1800
+456_H.csv,eyes,0,0,1800
+456_H.csv,head_rotation,0,0,1800
+474_L.csv,eyes,0,0,1800
+474_L.csv,head_rotation,0,0,1800
+474_L.csv,mouth_dist,0,0,1800
+474_L.csv,pupils_combined,0,0,1800
+474_L.csv,center_face,0,0,1800
+474_H.csv,eyes,0,0,1800
+474_H.csv,head_rotation,0,0,1800
+474_H.csv,mouth_dist,0,0,1800
+474_H.csv,pupils_combined,0,0,1800
+474_H.csv,center_face,0,0,1800
+444_H.csv,mouth_dist,3,5400,7200
