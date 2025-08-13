@@ -37,18 +37,19 @@ NASA-TLX questionnares were administed through OpenMATB at the end of each exper
 Statistics and figures reported for task performance measures can be found in figures_stats/validation_load.ipynb, which is broken up by topical subheading reported.
 
 ### Pose Data
+1. First, a data quality check was performed to remove noisy data using analyze_pose/data_quality_check.ipynb. This step identified 60-second windows with low OpenPose confidence (below 30% for more than one second) and saved the indices of those poor-quality windows to analyze_pose/qc_outputs/metric_bad_window_indices.csv.
 
-1. First, raw pose data (70-keypoints from OpenPose https://github.com/CMU-Perceptual-Computing-Lab/openpose) was first collapsed into a set of meaningful regions using analyze_pose/preprocess_pose.py. 
+2. Next, analyze_pose/preprocess_pose.py was used to collapse the 70 OpenPose keypoints (https://github.com/CMU-Perceptual-Computing-Lab/openpose) into meaningful facial and head regions. During this step, only the windows flagged by the quality check were removed, and the script generated a drop-report CSV summarizing how many windows were processed, how many were removed, and which metrics were affected. The cleaned and processed data were saved to data/preprocessed_pose/experimental/ for the 8-minute blocks and data/preprocessed_pose/baseline/ for the 2-minute blocks.
 
-2. Using those set of regions, linear metrics (velocity, acceleration, RMS) were calculated using analyze_pose/linear_pose.py
+3. Using those set of regions, linear metrics (velocity, acceleration, RMS) were calculated using analyze_pose/linear_pose.py
 
-3. AMI and FNN were calculated for RQA using analyze_pose/ami.py and fnn.py respectively to determine the right optimal embedding dimension and time lag
+4. AMI and FNN were calculated for RQA using analyze_pose/ami.py and fnn.py respectively to determine the right optimal embedding dimension and time lag
 
-4. AutoRQA was run using Recurrence-Quantification-Analysis toolbox using the script analyze_pose/rqa_pose.py
+5. AutoRQA was run using Recurrence-Quantification-Analysis toolbox using the script analyze_pose/rqa_pose.py
 
-5. CrossRQA between head-gaze was also run using Recurrence-Quantification-Analysis crossRQA function using the script under analyze_pose/crqa_pose.py
+6. CrossRQA between head-gaze was also run using Recurrence-Quantification-Analysis crossRQA function using the script under analyze_pose/crqa_pose.py
 
-6. The results (stats/figures) for 4.2 (Pose-Estimated Results) can be found in figures_stats/pose_estimated_results.ipynb, which is broken up by thesis headings
+7. The results (stats/figures) for 4.2 (Pose-Estimated Results) can be found in figures_stats/pose_estimated_results.ipynb, which is broken up by thesis headings
 
 # Machine Learning Models
 Data taken from the above was used to train a series of random forest classifiers using scikit. Model selection for each model run is found in machine_learning.ipynb, using a custom function.
