@@ -3,13 +3,13 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from scipy.signal import detrend as scipy_detrend
-import math
 from rqa.utils import rqa_utils_cpp, norm_utils
 import seaborn as sns
 
 # ── SETTINGS ───────────────────────────────────────────────────────
-ROOT_DIR        = "data/pose/experimental_pose"      # Where the data files are
-OUT_CSV         = "data/rqa/experimental_pose_rqa.csv"  # Where to save results
+MODE = "baseline"  # "experimental" or "baseline"
+ROOT_DIR = f"data/preprocessed_pose/{MODE}_pose"
+OUT_CSV  = f"data/rqa/{MODE}_pose_rqa.csv"
 
 SAMPLE_RATE_HZ  = 60                      # How many data points per second
 WIN_SECONDS     = 60                      # Length of each analysis window (seconds)
@@ -92,6 +92,10 @@ def main():
             for w_idx, (s, e) in enumerate(
                     tqdm(sliding_windows(total_n, win_len, step),
                          leave=False, desc=f"{pid}-{cond}:{col}")):
+                win = series[s:e]
+                if not np.isfinite(win).all():
+                    continue # Skip the NaN windows we made in the preprocessing script with low confidence keypoints
+
                 rs, err = compute_rqa(series[s:e], PARAMS)
                 if err != 0:
                     tqdm.write(f"‼️  {pid}_{cond} window {w_idx} (col {col}) error code {err}")
