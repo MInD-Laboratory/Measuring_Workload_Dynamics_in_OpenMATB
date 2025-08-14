@@ -82,7 +82,7 @@ N_SERIES       = 100            # Analyze 100 random data series
 MIN_DIM, MAX_DIM = 1, 10        # Range of dimensions to test
 TAU            = 20             # Time lag to use
 SEED           = 42             # Random seed for reproducibility
-FIG_DIR        = "figures"      # Where to save the plots
+FIG_DIR        = "figs/ami_fnn"      # Where to save the plots
 os.makedirs(FIG_DIR, exist_ok=True)
 
 # ── BUILD POOL OF VALID (file, col) PAIRS ──────────────────────────
@@ -121,13 +121,12 @@ for fpath, col in tqdm(sampled, desc="FNN series"):
 
 fnn_mat   = np.vstack(fnn_curves)        # Combine all results into one big table
 mean_fnn  = fnn_mat.mean(axis=0)         # Average FNN percentage for each dimension
-# sem_fnn   = fnn_mat.std(axis=0, ddof=1) / math.sqrt(fnn_mat.shape[0])  # Standard error (optional)
+sem_fnn   = fnn_mat.std(axis=0, ddof=1) / math.sqrt(fnn_mat.shape[0])  # Standard error 
 
 # ── PLOT MEAN ± 1 SEM ──────────────────────────────────────────────
 fig, ax = plt.subplots()
 ax.plot(dims, mean_fnn, marker="o", label="Mean %FNN")
-# ax.fill_between(dims, mean_fnn - sem_fnn, mean_fnn + sem_fnn,
-#                 alpha=0.3, label="± 1 SEM")
+
 ax.set_xlabel("Embedding Dimension")
 ax.set_ylabel("% False Nearest Neighbours")
 ax.set_title(f"FNN (100 random series across {len(csv_files)} files)")

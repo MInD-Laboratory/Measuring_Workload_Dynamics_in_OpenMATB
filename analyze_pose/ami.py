@@ -1,116 +1,137 @@
 import os
-import pandas as pd
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
+# ---------------- AMI ----------------
 def ami(timeseries, min_lag, max_lag):
-    # This function calculates the Average Mutual Information (AMI) for a given time series.
-    # AMI helps to find patterns and dependencies in time-based data.
-
-    # Convert input data to a NumPy array if it's not already
+    # 1D numpy
     if isinstance(timeseries, (pd.Series, pd.DataFrame)):
-        timeseries = timeseries.values.flatten()  # Make sure it's a 1D array
-    elif not isinstance(timeseries, np.ndarray):
-        raise ValueError("Input timeseries must be a NumPy array or Pandas Series/DataFrame")
-
-    x = timeseries
-    length = len(x)
-
-    # Create a vector of lag values (how far apart to compare data points)
-    if max_lag <= (length // 2 - 1):
-        if min_lag < max_lag:
-            lag = np.arange(min_lag, max_lag + 1)
-        else:
-            print('error - maximum lag not greater than minimum lag')
-            print('default lag vector used (0 - 50)')
-            lag = np.arange(0, 51)
+        x = timeseries.values.flatten()
+    elif isinstance(timeseries, np.ndarray):
+        x = timeseries.flatten()
     else:
-        print('error - maximum lag exceeds recommendation')
-        print('maximum lag set to n/2-1')
+        raise ValueError("timeseries must be a NumPy array or Pandas Series/DataFrame")
+
+    x = x[np.isfinite(x)]
+    length = len(x)
+    if length < 2*max_lag:
+        return None  # too short for requested lags
+
+    # lag vector
+    if max_lag <= (length // 2 - 1):
+        lag = np.arange(min_lag, max_lag + 1) if min_lag < max_lag else np.arange(0, 51)
+    else:
+        print("warning: max_lag exceeds n/2-1; setting to n/2-1")
         lag = np.arange(0, length // 2)
 
-    # Normalize the data so all values are between 0 and 1
-    x = (x - np.min(x)) / (np.max(x) - np.min(x))
+    # scale to [0,1] (guard against constant series)
+    lo, hi = np.min(x), np.max(x)
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return np.column_stack((lag, np.zeros_like(lag, dtype=float)))
+    x = (x - lo) / (hi - lo)
 
-    ami_values = np.zeros(len(lag))  # Prepare an array to store AMI results
+    ami_values = np.zeros(len(lag), dtype=float)
+    for i in tqdm(range(len(lag)), desc='Processing AMI', leave=False):
+        N = length - lag[i]
+        if N <= 2:
+            ami_values[i] = 0.0
+            continue
+        k = int(np.floor(1 + np.log2(N) + 0.5))
+        if k < 2 or np.var(x[:N], ddof=1) == 0:
+            ami_values[i] = 0.0
+            continue
 
-    # Calculate AMI for each lag value
-    for i in tqdm(range(len(lag)), desc='Processing AMI'):
-        k = int(np.floor(1 + np.log2(length - lag[i]) + 0.5))  # Number of bins for calculation
+        x1 = x[:N]
+        x2 = x[lag[i]:]
+        s = 0.0
+        for k1 in range(1, k + 1):
+            x1_lo, x1_hi = (k1 - 1) / k, k1 / k
+            mask1 = (x1 > x1_lo) & (x1 <= x1_hi)
+            if not mask1.any():
+                continue
+            px1 = mask1.sum() / N
+            for k2 in range(1, k + 1):
+                x2_lo, x2_hi = (k2 - 1) / k, k2 / k
+                mask2 = (x2 > x2_lo) & (x2 <= x2_hi)
+                if not mask2.any():
+                    continue
+                px2 = mask2.sum() / N
+                pxy = (mask1 & mask2).sum() / N
+                if pxy > 0:
+                    s += pxy * np.log2(pxy / (px1 * px2))
+        ami_values[i] = s
 
-        if np.var(x, ddof=1) == 0:  # If data doesn't vary, AMI is zero
-            ami_values[i] = 0
-        else:
-            ami_sum = 0
-            # Loop through all possible bin combinations
-            for k1 in range(1, k + 1):
-                for k2 in range(1, k + 1):
-                    # Check which data points fall into each bin
-                    cond1 = (k1 - 1) / k < x[:length - lag[i]]
-                    cond2 = x[:length - lag[i]] <= k1 / k
-                    cond3 = (k2 - 1) / k < x[lag[i]:]
-                    cond4 = x[lag[i]:] <= k2 / k
+    return np.column_stack((lag, ami_values))
 
-                    # Count how many data points meet all conditions
-                    ppp = np.sum(cond1 & cond2 & cond3 & cond4)
-                    px1 = np.sum(cond1 & cond2)
-                    px2 = np.sum(cond3 & cond4)
+# ---------------- Params ----------------
+MODE = "experimental"  # "experimental" or "baseline"
+ROOT_DIR = f"data/preprocessed_pose/{MODE}_pose"
+N_FILES_TO_USE = 100
+MIN_LAG = 1
+MAX_LAG = 100
 
-                    # If there are matching points, calculate AMI contribution
-                    if ppp > 0:
-                        ppp = ppp / (length - lag[i])
-                        px1 = px1 / (length - lag[i])
-                        px2 = px2 / (length - lag[i])
-                        ami_sum += ppp * np.log2(ppp / (px1 * px2))
-
-            ami_values[i] = ami_sum  # Store AMI value for this lag
-
-    # Combine lag values and AMI results into a single array
-    ami_result = np.column_stack((lag, ami_values))
-    
-    return ami_result  # Return the results
-
-# ── Parameters ─────────────────────────────────────────────────────
-ROOT_DIR = "data/preprocessed_pose/experimental_pose"  # Folder containing data files, change to baseline_pose if needed
+# Explicit signals (we'll drop *_prob below)
 TARGET_COLUMNS = [
-    "avg_pupil_x"  # Which column in the data to analyze
+    "center_face_x","center_face_y","center_face_prob",
+    "left_eye_x","left_eye_y","left_eye_prob",
+    "right_eye_x","right_eye_y","right_eye_prob",
+    "left_pupil_x","left_pupil_y","left_pupil_prob",
+    "right_pupil_x","right_pupil_y","right_pupil_prob",
+    "center_face_magnitude","left_eye_magnitude","right_eye_magnitude",
+    "left_pupil_magnitude","right_pupil_magnitude",
+    "avg_pupil_x","avg_pupil_y","avg_pupil_magnitude",
+    "blink_dist","head_rotation_angle","mouth_dist",
 ]
-N_FILES_TO_USE = 100  # How many files to process
-MIN_LAG = 1          # Smallest lag to check
-MAX_LAG = 100        # Largest lag to check
 
-# ── Run AMI across all signals ─────────────────────────────────────
-ami_results = {col: [] for col in TARGET_COLUMNS}  # Prepare to store results
-csv_files = sorted(f for f in os.listdir(ROOT_DIR) if f.endswith(".csv"))  # List all CSV files
-csv_files = csv_files[:N_FILES_TO_USE]  # Only use the first N files
+# drop prob columns
+TARGET_COLUMNS = [c for c in TARGET_COLUMNS if not c.endswith("_prob")]
+
+# ---------------- Run across files/columns → one curve ----------------
+csv_files = sorted([f for f in os.listdir(ROOT_DIR) if f.endswith(".csv")])[:N_FILES_TO_USE]
+
+all_curves = []     # list of AMI value arrays
+lags_ref = None
+used = 0
 
 for file in tqdm(csv_files, desc="Files"):
-    df = pd.read_csv(os.path.join(ROOT_DIR, file))  # Read each file into a table
+    df = pd.read_csv(os.path.join(ROOT_DIR, file))
     for col in TARGET_COLUMNS:
         if col not in df.columns:
-            continue  # Skip if the column isn't in the file
-        series = df[col].dropna().values  # Get the data, remove missing values
-        if len(series) < 2 * MAX_LAG:
-            continue  # Skip if not enough data points
-        ami_result = ami(series, MIN_LAG, MAX_LAG)  # Calculate AMI
-        ami_values = ami_result[:, 1]  # Get just the AMI values
-        ami_results[col].append(ami_values)  # Store results
+            continue
+        series = pd.to_numeric(df[col], errors="coerce").dropna().values
+        if len(series) < 2*MAX_LAG:
+            continue
+        res = ami(series, MIN_LAG, MAX_LAG)
+        if res is None or res.shape[0] == 0:
+            continue
+        if lags_ref is None:
+            lags_ref = res[:, 0]
+        # ensure same lag vector length
+        if res[:, 0].shape != lags_ref.shape or not np.allclose(res[:, 0], lags_ref):
+            # skip mismatched lag vectors (shouldn't happen, but be safe)
+            continue
+        all_curves.append(res[:, 1])
+        used += 1
 
-# ── Average AMI per signal ─────────────────────────────────────────
-ami_averaged = {
-    col: np.nanmean(ami_results[col], axis=0)  # Average AMI across all files
-    for col in TARGET_COLUMNS if ami_results[col]
-}
-lags = ami_result[:, 0]  # Get the lag values (same for all files)
+if not all_curves:
+    raise RuntimeError("No usable series found (check columns, NaNs, or MAX_LAG vs series length).")
 
-# ── Plot the results ───────────────────────────────────────────────
-for col in ami_averaged:
-    plt.figure()
-    plt.plot(lags, ami_averaged[col], marker='o')  # Draw the AMI curve
-    plt.title(f"AMI Curve (Averaged)\n{col}")      # Add a title
-    plt.xlabel("Time Lag")                         # Label the x-axis
-    plt.ylabel("Average Mutual Information")       # Label the y-axis
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()  # Display the plot
+# Average across all selected columns/files → one curve
+stacked = np.vstack(all_curves)
+ami_avg = np.nanmean(stacked, axis=0)
+
+# ---------------- Plot ----------------
+plt.figure()
+plt.plot(lags_ref, ami_avg, marker='o', linewidth=1)
+plt.title(f"AMI Curve (Averaged across columns & files)\nMODE={MODE}")
+plt.xlabel("Time Lag (samples)")
+plt.ylabel("Average Mutual Information")
+plt.grid(True)
+plt.tight_layout()
+os.makedirs("figures", exist_ok=True)
+out_path = f"figures/ami_curve_{MODE}_ALL_SIGNALS.svg"
+plt.savefig(out_path)
+plt.show()
+print(f"[OK] Averaged over {used} series | saved -> {out_path}")
