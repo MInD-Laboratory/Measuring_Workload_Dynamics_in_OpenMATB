@@ -1,12 +1,14 @@
 import os
-import sys
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from rqa.utils import norm_utils, rqa_utils_cpp
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-ROOT_DIR        = "data/preprocessed_pose/experimental_pose" # change to baseline_pose if needed
-OUT_CSV        = "data/rqa/crqa_head_eye.csv" 
+MODE = "baseline"  # "experimental" or "baseline"
+ROOT_DIR = f"data/preprocessed_pose/{MODE}_pose"
+OUT_CSV  = f"data/rqa/{MODE}_pose_crqa_head_eye.csv"
+
 SAMPLE_RATE_HZ = 60        # How many data points per second (frames per second)
 WIN_SECONDS    = 60        # How long each analysis window is (in seconds)
 OVERLAP_FRAC   = 0.5       # How much windows overlap (50%)
@@ -80,6 +82,10 @@ def main():
         # Divide the data into overlapping windows and analyze each window
         for w_idx, (s, e) in enumerate(
                 sliding_windows(total_n, win_len, step)):
+            xw = series1[s:e]
+            yw = series2[s:e]
+            if not (np.isfinite(xw).all() and np.isfinite(yw).all()):
+                continue
             rs, err = compute_cross_rqa(series1[s:e], series2[s:e], PARAMS)
             if err != 0:
                 tqdm.write(f"‼️  {pid}_{cond} window {w_idx} error {err}")
