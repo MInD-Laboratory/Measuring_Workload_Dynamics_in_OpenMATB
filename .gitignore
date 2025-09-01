@@ -11,3 +11,4 @@ __pycache__/
 .vscode/
 data/model_output/results
 data/test_preprocessed_pose
+gnn/
