@@ -5,7 +5,7 @@ from tqdm import tqdm
 from scipy.signal import detrend as scipy_detrend
 
 # ------------------------------ SETTINGS ------------------------------
-MODE = "baseline"  # "baseline" or "experimental"
+MODE = "experimental"  # "baseline" or "experimental"
 DATA_DIR = f"data/preprocessed_pose/{MODE}_pose" # Folder containing the data files
 OUT_PATH = f"data/linear_pose_metrics/{MODE}_pose_metrics.csv" # Output path for the metrics
 

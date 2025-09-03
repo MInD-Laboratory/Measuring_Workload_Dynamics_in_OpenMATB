@@ -7,25 +7,24 @@ from rqa.utils import norm_utils, rqa_utils_cpp
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 MODE = "baseline"  # "experimental" or "baseline"
 ROOT_DIR = f"data/preprocessed_pose/{MODE}_pose"
-OUT_CSV  = f"data/rqa/{MODE}_pose_crqa_head_eye.csv"
+OUT_CSV  = f"data/rqa/{MODE}_pose_crqa_head_eye_xy.csv"  # single file for both axes
 
-SAMPLE_RATE_HZ = 60        # How many data points per second (frames per second)
-WIN_SECONDS    = 60        # How long each analysis window is (in seconds)
-OVERLAP_FRAC   = 0.5       # How much windows overlap (50%)
+SAMPLE_RATE_HZ = 60        # frames per second
+WIN_SECONDS    = 60        # window length (seconds)
+OVERLAP_FRAC   = 0.5       # 50% overlap
 
 # Parameters for the analysis method
 PARAMS = {
-    "norm":        1,    # How to normalize the data
-    "eDim":        4,    # Embedding dimension (for RQA)
-    "tLag":        40,   # Time lag (for RQA)
-    "rescaleNorm": 1,    # Whether to rescale distances
-    "radius":      0.2,  # Threshold for recurrence
-    "minl":        2,    # Minimum line length for analysis
+    "norm":        1,    # normalization method
+    "eDim":        4,    # embedding dimension
+    "tLag":        40,   # time lag
+    "rescaleNorm": 1,    # rescale distances
+    "radius":      0.2,  # recurrence threshold
+    "minl":        2,    # minimum line length
 }
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def sliding_windows(total_len, win_len, step):
-    # This function divides the data into overlapping windows for analysis
     i = 0
     while i + win_len <= total_len:
         yield i, i + win_len
@@ -34,13 +33,10 @@ def sliding_windows(total_len, win_len, step):
 def compute_cross_rqa(x, y, p):
     """Run cross-recurrence quantification analysis (CRQA) on two data series."""
     try:
-        # Normalize both data series
         x_n = norm_utils.normalize_data(x, p["norm"])
         y_n = norm_utils.normalize_data(y, p["norm"])
-        # Calculate distances between points in the two series
         ds  = rqa_utils_cpp.rqa_dist(x_n, y_n, dim=p["eDim"], lag=p["tLag"])
 
-        # Calculate RQA statistics from the distance matrix
         _, rs, _, err = rqa_utils_cpp.rqa_stats(
             ds["d"],
             rescale=p["rescaleNorm"],
@@ -57,68 +53,70 @@ def compute_cross_rqa(x, y, p):
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 def main():
-    results = []  # Store results for all files and windows
-    win_len = WIN_SECONDS * SAMPLE_RATE_HZ  # How many data points in each window
-    step    = int(win_len * (1 - OVERLAP_FRAC))  # How far to move for each new window
+    results = []
+    win_len = WIN_SECONDS * SAMPLE_RATE_HZ
+    step    = int(win_len * (1 - OVERLAP_FRAC))
 
-    # List all CSV files in the data folder
     csv_files = sorted(f for f in os.listdir(ROOT_DIR) if f.endswith(".csv"))
     for csv_file in tqdm(csv_files, desc="Files"):
-        # Get participant ID and condition from the filename
         pid, cond = os.path.splitext(csv_file)[0].split("_", 1)
-        # Read the data from the file
         df = pd.read_csv(os.path.join(ROOT_DIR, csv_file))
 
-        # Make sure both required columns are present
-        if not {"center_face_magnitude", "avg_pupil_magnitude"} <= set(df.columns):
-            tqdm.write(f"⚠️  {csv_file}: missing pupil columns, skipping.")
+        # Require both X and Y columns for head and eye
+        required = {"center_face_x", "center_face_y", "avg_pupil_x", "avg_pupil_y"}
+        if not required.issubset(df.columns):
+            missing = required - set(df.columns)
+            tqdm.write(f"⚠️  {csv_file}: missing columns {sorted(missing)}, skipping.")
             continue
 
-        # Get the two data series to compare
-        series1 = df["center_face_magnitude"].values
-        series2 = df["avg_pupil_magnitude"].values
-        total_n = len(series1)
+        axes = {
+            "x": ("center_face_x", "avg_pupil_x"),
+            "y": ("center_face_y", "avg_pupil_y"),
+        }
 
-        # Divide the data into overlapping windows and analyze each window
-        for w_idx, (s, e) in enumerate(
-                sliding_windows(total_n, win_len, step)):
-            xw = series1[s:e]
-            yw = series2[s:e]
-            if not (np.isfinite(xw).all() and np.isfinite(yw).all()):
-                continue
-            rs, err = compute_cross_rqa(series1[s:e], series2[s:e], PARAMS)
-            if err != 0:
-                tqdm.write(f"‼️  {pid}_{cond} window {w_idx} error {err}")
-                continue
+        for axis, (head_col, eye_col) in axes.items():
+            label = f"crqa_head_eye_{axis}"
+            series1 = df[head_col].values
+            series2 = df[eye_col].values
+            total_n = len(series1)
 
-            # Save the results for this window
-            results.append({
-                "participant":      pid,
-                "condition":        cond,
-                "window_index":     w_idx,
-                "start_sample":     s,
-                "end_sample":       e,
-                "perc_recur":       float(rs["perc_recur"]),       # % recurrence
-                "perc_determ":      float(rs["perc_determ"]),      # % determinism
-                "maxl_found":       float(rs["maxl_found"]),       # Longest line
-                "mean_line_length": float(rs["mean_line_length"]), # Average line length
-                "std_line_length":  float(rs["std_line_length"]),  # Std dev of line length
-                "entropy":          float(rs["entropy"]),          # Entropy
-                "laminarity":       float(rs["laminarity"]),       # Laminarity
-                "trapping_time":    float(rs["trapping_time"]),    # Trapping time
-                "vmax":             float(rs["vmax"]),             # Vertical max
-                "divergence":       float(rs["divergence"]),       # Divergence
-                "trend_lower_diag": float(rs["trend_lower_diag"]), # Trend lower diagonal
-                "trend_upper_diag": float(rs["trend_upper_diag"]), # Trend upper diagonal
-            })
+            for w_idx, (s, e) in enumerate(sliding_windows(total_n, win_len, step)):
+                xw = series1[s:e]
+                yw = series2[s:e]
+                if not (np.isfinite(xw).all() and np.isfinite(yw).all()):
+                    continue
 
-    # Save all results to a CSV file if any were found
+                rs, err = compute_cross_rqa(xw, yw, PARAMS)
+                if err != 0:
+                    tqdm.write(f"‼️  {pid}_{cond} {label} window {w_idx} error {err}")
+                    continue
+
+                results.append({
+                    "participant":      pid,
+                    "condition":        cond,
+                    "column":           label,                       # ← requested field
+                    "window_index":     w_idx,
+                    "start_sample":     s,
+                    "end_sample":       e,
+                    "perc_recur":       float(rs["perc_recur"]),
+                    "perc_determ":      float(rs["perc_determ"]),
+                    "maxl_found":       float(rs["maxl_found"]),
+                    "mean_line_length": float(rs["mean_line_length"]),
+                    "std_line_length":  float(rs["std_line_length"]),
+                    "entropy":          float(rs["entropy"]),
+                    "laminarity":       float(rs["laminarity"]),
+                    "trapping_time":    float(rs["trapping_time"]),
+                    "vmax":             float(rs["vmax"]),
+                    "divergence":       float(rs["divergence"]),
+                    "trend_lower_diag": float(rs["trend_lower_diag"]),
+                    "trend_upper_diag": float(rs["trend_upper_diag"]),
+                })
+
     if results:
         pd.DataFrame(results).to_csv(OUT_CSV, index=False)
         print(f"\n✅  Cross-RQA results written to {OUT_CSV} ({len(results)} rows)")
     else:
         print("\n😐  No cross-RQA results generated.")
 
-# Run the main function if this file is executed directly
 if __name__ == "__main__":
     main()
