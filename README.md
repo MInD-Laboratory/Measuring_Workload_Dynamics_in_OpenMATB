@@ -12,6 +12,7 @@ Linear and nonlinear analyses were applied to the pose data. Nonlinear dynamics 
 
 ### 0. Clone the repository  
 git clone https://github.com/MInD-Laboratory/matb_rqa_workload
+⚠️ This repo uses submodules. Run git submodule update --init --recursive after cloning.
 
 cd matb_rqa_workload
 
