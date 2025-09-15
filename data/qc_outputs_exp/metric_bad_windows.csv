@@ -330,12 +330,12 @@ file,metric,bad_windows,total_windows,pct_bad
 433_M.csv,pupils_combined,0,13,0.0
 433_M.csv,center_face,0,13,0.0
 476_M.csv,eyes,0,16,0.0
-476_M.csv,head_rotation,1,16,0.0625
+476_M.csv,head_rotation,0,16,0.0
 476_M.csv,mouth_dist,1,16,0.0625
-476_M.csv,pupils_combined,1,16,0.0625
+476_M.csv,pupils_combined,0,16,0.0
 476_M.csv,center_face,1,16,0.0625
 456_H.csv,eyes,1,16,0.0625
-456_H.csv,head_rotation,0,16,0.0
+456_H.csv,head_rotation,1,16,0.0625
 456_H.csv,mouth_dist,0,16,0.0
 456_H.csv,pupils_combined,1,16,0.0625
 456_H.csv,center_face,1,16,0.0625
@@ -385,9 +385,9 @@ file,metric,bad_windows,total_windows,pct_bad
 431_M.csv,pupils_combined,0,16,0.0
 431_M.csv,center_face,0,16,0.0
 474_M.csv,eyes,0,16,0.0
-474_M.csv,head_rotation,1,16,0.0625
+474_M.csv,head_rotation,0,16,0.0
 474_M.csv,mouth_dist,1,16,0.0625
-474_M.csv,pupils_combined,1,16,0.0625
+474_M.csv,pupils_combined,0,16,0.0
 474_M.csv,center_face,1,16,0.0625
 431_L.csv,eyes,0,16,0.0
 431_L.csv,head_rotation,0,16,0.0
@@ -470,7 +470,7 @@ file,metric,bad_windows,total_windows,pct_bad
 469_M.csv,pupils_combined,0,16,0.0
 469_M.csv,center_face,0,16,0.0
 474_H.csv,eyes,0,16,0.0
-474_H.csv,head_rotation,1,16,0.0625
+474_H.csv,head_rotation,0,16,0.0
 474_H.csv,mouth_dist,0,16,0.0
 474_H.csv,pupils_combined,0,16,0.0
 474_H.csv,center_face,0,16,0.0
@@ -522,7 +522,7 @@ file,metric,bad_windows,total_windows,pct_bad
 454_L.csv,eyes,0,16,0.0
 454_L.csv,head_rotation,0,16,0.0
 454_L.csv,mouth_dist,1,16,0.0625
-454_L.csv,pupils_combined,1,16,0.0625
+454_L.csv,pupils_combined,0,16,0.0
 454_L.csv,center_face,0,16,0.0
 437_M.csv,eyes,0,16,0.0
 437_M.csv,head_rotation,0,16,0.0
@@ -735,9 +735,9 @@ file,metric,bad_windows,total_windows,pct_bad
 445_L.csv,pupils_combined,0,16,0.0
 445_L.csv,center_face,0,16,0.0
 419_M.csv,eyes,0,16,0.0
-419_M.csv,head_rotation,1,16,0.0625
+419_M.csv,head_rotation,0,16,0.0
 419_M.csv,mouth_dist,1,16,0.0625
-419_M.csv,pupils_combined,1,16,0.0625
+419_M.csv,pupils_combined,0,16,0.0
 419_M.csv,center_face,1,16,0.0625
 404_H.csv,eyes,0,16,0.0
 404_H.csv,head_rotation,0,16,0.0
@@ -750,9 +750,9 @@ file,metric,bad_windows,total_windows,pct_bad
 441_H.csv,pupils_combined,0,16,0.0
 441_H.csv,center_face,0,16,0.0
 419_L.csv,eyes,0,16,0.0
-419_L.csv,head_rotation,1,16,0.0625
+419_L.csv,head_rotation,0,16,0.0
 419_L.csv,mouth_dist,1,16,0.0625
-419_L.csv,pupils_combined,1,16,0.0625
+419_L.csv,pupils_combined,0,16,0.0
 419_L.csv,center_face,0,16,0.0
 420_H.csv,eyes,0,16,0.0
 420_H.csv,head_rotation,0,16,0.0
@@ -803,7 +803,7 @@ file,metric,bad_windows,total_windows,pct_bad
 426_L.csv,head_rotation,0,16,0.0
 426_L.csv,mouth_dist,0,16,0.0
 426_L.csv,pupils_combined,0,16,0.0
-426_L.csv,center_face,2,16,0.125
+426_L.csv,center_face,0,16,0.0
 422_H.csv,eyes,0,16,0.0
 422_H.csv,head_rotation,0,16,0.0
 422_H.csv,mouth_dist,0,16,0.0
@@ -940,7 +940,7 @@ file,metric,bad_windows,total_windows,pct_bad
 462_H.csv,pupils_combined,0,16,0.0
 462_H.csv,center_face,0,16,0.0
 427_H.csv,eyes,1,16,0.0625
-427_H.csv,head_rotation,0,16,0.0
+427_H.csv,head_rotation,1,16,0.0625
 427_H.csv,mouth_dist,0,16,0.0
 427_H.csv,pupils_combined,0,16,0.0
 427_H.csv,center_face,0,16,0.0
