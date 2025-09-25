@@ -1,0 +1,107 @@
+{
+  "config": {
+    "RAW_DIR": "data/raw/experimental",
+    "OUT_BASE": "data/processed/experimental",
+    "FPS": 60,
+    "IMG_WIDTH": 2560,
+    "IMG_HEIGHT": 1440,
+    "CONF_THRESH": 0.3,
+    "MAX_INTERP_RUN": 60,
+    "FILTER_ORDER": 4,
+    "CUTOFF_HZ": 10.0,
+    "WINDOW_SECONDS": 60,
+    "WINDOW_OVERLAP": 0.5,
+    "PROCRUSTES_REF": [
+      30,
+      31,
+      37,
+      46
+    ],
+    "BLINK_L_TOP": [
+      38,
+      39
+    ],
+    "BLINK_L_BOT": [
+      41,
+      42
+    ],
+    "BLINK_R_TOP": [
+      44,
+      45
+    ],
+    "BLINK_R_BOT": [
+      47,
+      48
+    ],
+    "HEAD_ROT": [
+      37,
+      46
+    ],
+    "MOUTH": [
+      63,
+      67
+    ],
+    "CENTER_FACE": [
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36
+    ]
+  },
+  "flags": {
+    "RUN_FILTER": false,
+    "RUN_MASK": false,
+    "RUN_INTERP_FILTER": false,
+    "RUN_NORM": false,
+    "RUN_TEMPLATES": false,
+    "RUN_FEATURES_PROCRUSTES_GLOBAL": false,
+    "RUN_FEATURES_PROCRUSTES_PARTICIPANT": false,
+    "RUN_FEATURES_ORIGINAL": false,
+    "RUN_LINEAR": true,
+    "SAVE_REDUCED": true,
+    "SAVE_MASKED": true,
+    "SAVE_INTERP_FILTERED": true,
+    "SAVE_NORM": true,
+    "OVERWRITE": true,
+    "OVERWRITE_TEMPLATES": false,
+    "SCALE_BY_INTEROCULAR": true
+  },
+  "masking_overall": {},
+  "window_drops": {
+    "procrustes_global": {},
+    "procrustes_participant": {},
+    "original": {},
+    "linear_metrics": {
+      "procrustes_global": {
+        "mouth_aperture": 10,
+        "head_rotation_rad": 4,
+        "head_tx": 4,
+        "head_ty": 4,
+        "head_motion_mag": 4,
+        "blink_aperture": 4,
+        "pupil_metric": 4
+      },
+      "procrustes_participant": {
+        "mouth_aperture": 10,
+        "head_rotation_rad": 4,
+        "head_tx": 4,
+        "head_ty": 4,
+        "head_motion_mag": 4,
+        "blink_aperture": 4,
+        "pupil_metric": 4
+      },
+      "original": {
+        "mouth_aperture": 10,
+        "head_rotation_rad": 4,
+        "blink_aperture": 4,
+        "pupil_metric": 4,
+        "center_face_magnitude": 4
+      }
+    }
+  }
+}
