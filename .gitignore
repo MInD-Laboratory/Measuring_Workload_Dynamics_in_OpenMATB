@@ -12,3 +12,11 @@ __pycache__/
 data/model_output/results
 data/test_preprocessed_pose
 gnn/
+Pose/data/raw
+Pose/data/processed/experimental/interp_filtered
+Pose/data/processed/experimental/masked
+Pose/data/processed/experimental/norm_screen
+Pose/data/processed/experimental/templates
+Pose/data/processed/experimental/reduced
+Pose/data/processed/experimental/features
+Performance/data/raw
