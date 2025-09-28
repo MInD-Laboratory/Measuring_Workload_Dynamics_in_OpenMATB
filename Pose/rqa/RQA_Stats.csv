@@ -1,0 +1,3 @@
+filename,eDim,tLag,rescale,radius,perc_recur,perc_determ,maxl_found,mean_line,std_line,count_line,entropy,laminarity,trapping_time,vmax,divergence,trend_lower_diag,trend_upper_diag
+AutoRQA, 3, 15, 1, 10.0, 0.694, 30.730, 6.00, 2.21, 0.52, 3020, 0.809, 0.495, 2.452, 11.00, 0.167, -0.045, -0.045
+CrossRQA, 3, 15, 1, 10.0, 0.902, 97.975, 201.00, 14.57, 16.59, 7730, 5.041, 0.930, 2.647, 5.00, 0.005, -0.054, -0.248

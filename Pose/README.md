@@ -2,98 +2,101 @@
 
 Modular tools for processing facial pose data from OpenPose landmark detection.
 
-## Capabilities
+## What it does
+1. Load CSVs → filter to relevant landmarks
+2. Mask low-confidence points (conf < threshold)
+3. Interpolate short gaps + Butterworth low-pass
+4. Normalize to screen (default 2560×1440)
+5. Build templates (global + per-participant)
+6. Extract features:
+    - Procrustes vs global template (windowed)
+    - Procrustes vs participant template (windowed)
+    - Original (no Procrustes) features (windowed)
+10. Drop windows containing any NaNs per metric
+11. Compute linear metrics (mean |vel|, mean |acc|, RMS) per window
+12. Save a JSON summary (config, masking stats, window drops, errors)
 
-- Quality control analysis with automated bad window detection
-- Coordinate normalization using Procrustes alignment or eye-corner stabilization
-- Feature extraction for facial expressions, head pose, and gaze
-- Temporal filtering with Butterworth filters
-- Statistical analysis and group comparisons
-- Data visualization and report generation
+Outputs: CSVs under data/processed/* with per-frame features, windowed features, and linear metrics, plus templates and a summary JSON.
 
 
 ## Directory Structure
 
 ```
 Pose/
-├── pose_analysis.ipynb          # Main analysis notebook
-├── utils/                       # Modular utility functions
-│   ├── __init__.py
-│   ├── landmark_config.py       # Landmark definitions and configurations
-│   ├── quality_control.py       # QC analysis and bad window detection
-│   ├── coordinate_normalization.py  # Procrustes alignment and stabilization
-│   ├── feature_extraction.py    # Individual feature extraction functions
-│   ├── temporal_filtering.py    # Temporal smoothing and filtering
-│   ├── masking.py              # Quality-based data masking
-│   ├── statistical_analysis.py # Statistical analysis and normalization
-│   ├── plotting.py             # Visualization functions
-│   ├── data_loading.py         # Experimental condition mapping
-│   └── pipeline.py             # Complete processing pipeline
-├── feature_data/               # Output: Processed feature files
-├── output/                     # Output: Analysis results and figures
-└── _old/                       # Original code for reference
+├── pose_pipeline.py                # main driver (uses utils/*)
+├── Interactive_Pipeline.ipynb  # interactive viewer + bars/stats
+├── utils/
+│  ├─ __init__.py                   # Config + flags
+│  ├─ io_utils.py                   # I/O, filtering, masking, summaries
+│  ├─ signal_utils.py               # interpolation, Butterworth filtering
+│  ├─ normalize_utils.py            # normalization, interocular series
+│  ├─ features_utils.py             # Procrustes/original features, linear metrics
+│  ├─ window_utils.py               # windowing + helpers
+│  ├─ nb_utils.py                   # notebook helpers (plots/loaders)
+│  ├─ stats_utils.py                # omnibus + Holm–Bonferroni
+│  └─ viz_utils.py                  # interactive viewer + Procrustes transform
+├── data/
+│  ├─ raw/                          # put raw CSVs here (or set CFG.RAW_DIR)
+│  └─ processed/                    # pipeline writes here (or set CFG.OUT_BASE)
+└── _old/                           # legacy code for reference
+
 ```
 
-## Usage
+## Data Format
+- Files: `data/raw/<participantID>_<condition>.csv` (e.g. 472_H.csv)
+- Columns: `x1,y1,prob1,...,x70,y70,prob70` (case-insensitive; confidence prefix auto-detected among prob*, c*, confidence*)
+- Default sampling: 60 Hz (configurable)
 
-Execute `pose_analysis.ipynb` or call pipeline functions directly.
+## Quick start
 
-## Features
+### Run the pipeline (CLI)
+`python pose_pipeline.py`
+This processes all CSVs in data/raw (or whatever CFG.RAW_DIR is set to) and writes results under data/processed.
 
-- Eye aspect ratio (blink detection)
-- Mouth opening distance
-- Head rotation angle
-- Face center coordinates and movement
-- Eye region coordinates
-- Pupil/gaze position and deviation
-- Landmark confidence scores
+### Run the notebook (interactive)
 
-## Processing
+`jupyer lab`
 
-1. Quality control with window-based analysis
-2. Coordinate normalization (Procrustes or eye-corner)
-3. Feature extraction from landmarks
-4. Temporal filtering
-5. Statistical analysis
+Open `Interactive_Pipeline.ipynb`. At the top, set:
 
-## Functions
+```
+from pose_pipeline import Config
+CFG = Config()
+CFG.RAW_DIR  = "data/raw"                 # or your path
+CFG.OUT_BASE = "data/processed"           # or your path
+```
 
-**Quality Control**
-- `run_quality_control_batch()` - Batch quality analysis
-- `analyze_file_quality()` - Single file analysis
-- `summarize_quality_control()` - Quality summaries
+Then run the “Run pipeline” cell. The notebook auto-detects whether to run full pipeline or linear-only (if per-frame CSVs already exist).
 
-**Feature Extraction**
-- `extract_all_features()` - All facial features
-- `extract_eye_aspect_ratio()` - Eye closure
-- `extract_mouth_opening()` - Mouth movement
-- `extract_head_rotation()` - Head pose
-- `extract_pupil_features()` - Gaze tracking
+The notebook supports:
+- Interactive pose viewers (original vs Procrustes alignments)
+- Bar charts of metrics by condition
+- Stats tables (ANOVA/Kruskal, Holm–Bonferroni pairwise)
 
-**Coordinate Normalization**
-- `compute_procrustes_alignment()` - Procrustes alignment
-- `compute_original_alignment()` - Eye-corner stabilization
-
-**Statistical Analysis**
-- `calculate_summary_statistics()` - Descriptive statistics
-- `compare_groups_statistical()` - Group comparisons
-- `perform_feature_analysis()` - Complete analysis
-- `apply_z_score_normalization()` - Z-score normalization
-
-**Data Loading**
-- `load_pose_data_with_conditions()` - Load with conditions
-- `parse_condition_mapping()` - Map conditions
-- `prepare_data_for_statistical_analysis()` - Prepare for analysis
-
-**Visualization**
-- `plot_qc_summary()` - Quality control plots
-- `plot_feature_timeseries()` - Time series plots
-- `plot_statistical_bars()` - Statistical plots
-- `plot_correlation_matrix()` - Correlation plots
 
 ## Outputs
 
-- `feature_data/*.csv` - Extracted features
-- `quality_control/*.csv` - Quality assessments
-- `reports/*.csv` - Processing logs
-- `output/figures/*.png` - Plots and visualizations
+```
+data/processed/<name>/
+├─ reduced/                 # filtered triplets (x, y, prob)
+├─ masked/                  # after confidence masking
+├─ interp_filtered/         # after interpolation + Butterworth
+├─ norm_screen/             # normalized coordinates
+├─ templates/
+│   ├─ global_template.csv
+│   └─ participant_<pid>_template.csv 
+├─ features/
+│   ├─ original_features.csv # with no alignment
+│   ├─ procrustes_global_features.csv
+│   ├─ procrustes_participant_features.csv
+│   └─ per_frame/           # full time series
+│       ├─ original/*.csv
+│       ├─ procrustes_global/*.csv
+│       └─ procrustes_participant/*.csv
+├─ linear_metrics/              # Velocity, acceleration, RMS for each feature
+│   ├─ original_linear.csv
+│   ├─ procrustes_global_linear.csv
+│   └─ procrustes_participant_linear.csv
+└─ pipeline_summary.json     # config, masking stats, window drops, etc.
+```
+
