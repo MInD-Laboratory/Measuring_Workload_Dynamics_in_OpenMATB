@@ -26,6 +26,15 @@ def find_nan_runs(mask: np.ndarray) -> List[Tuple[int, int]]:
     return runs
 
 def interpolate_run_limited(series: pd.Series, max_run: int) -> pd.Series:
+    """Interpolate NaN values only for runs shorter than max_run.
+
+    Args:
+        series: Input series with potential NaN values
+        max_run: Maximum consecutive NaN values to interpolate
+
+    Returns:
+        Series with short NaN runs interpolated, long runs kept as NaN
+    """
     x = series.astype(float).copy()
     nan_mask = x.isna().values
     runs = find_nan_runs(nan_mask)
@@ -37,32 +46,58 @@ def interpolate_run_limited(series: pd.Series, max_run: int) -> pd.Series:
     if allow.any():
         disallowed = nan_mask & (~allow)
         temp = y_interp.copy()
-        temp[~(~disallowed)] = np.nan  # ensure disallowed NaNs remain NaN
+        # Simplified: directly set disallowed positions to NaN
+        temp[disallowed] = np.nan  # ensure disallowed NaNs remain NaN
         temp = temp.interpolate(method="linear", limit=None, limit_direction="both")
         y_interp[allow] = temp[allow]
         y_interp[~allow & nan_mask] = np.nan
     return y_interp
 
 def butterworth_segment_filter(series: pd.Series, order: int, cutoff_hz: float, fs: float) -> pd.Series:
+    """
+    Low-pass Butterworth filtering applied per contiguous finite (non-NaN/inf) segment.
+    Segments with length <= padlen are left UNFILTERED to avoid filtfilt ValueError.
+    """
     if not SCIPY_AVAILABLE:
         raise RuntimeError("scipy is required for Butterworth filtering.")
+
+    # Work on a float copy; keep the original index for return
     x = series.astype(float).values.copy()
+    n = len(x)
+
+    # Design digital Butterworth LPF
     nyq = fs / 2.0
-    wn = min(0.999, cutoff_hz / nyq)
+    wn = cutoff_hz / nyq
+    wn = max(0.0, min(0.999, wn))          # clamp normalized cutoff to (0, 1)
     b, a = butter(order, wn, btype='low', analog=False)
+
+    # filtfilt's default pad length: 3 * (max(len(a), len(b)) - 1)
     padlen = 3 * (max(len(a), len(b)) - 1)
 
-    start = 0
-    while start < len(x):
-        while start < len(x) and np.isnan(x[start]):
-            start += 1
-        if start >= len(x):
+    # Scan through contiguous finite (valid) runs
+    i = 0
+    while i < n:
+        # Skip invalid samples (NaN or inf)
+        while i < n and not np.isfinite(x[i]):
+            i += 1
+        if i >= n:
             break
-        end = start
-        while end < len(x) and not np.isnan(x[end]):
-            end += 1
-        seg_len = end - start
-        if seg_len > padlen + 1:
-            x[start:end] = filtfilt(b, a, x[start:end])
-        start = end
+
+        # Find end of this valid segment [i, j)
+        j = i
+        while j < n and np.isfinite(x[j]):
+            j += 1
+
+        seg_len = j - i
+        # Only filter if segment is long enough for filtfilt
+        if seg_len > padlen:
+            try:
+                x[i:j] = filtfilt(b, a, x[i:j])  # filter in place
+            except ValueError:
+                # Extremely rare guard: if SciPy still complains, leave unfiltered
+                pass
+        # else: too short → leave as-is (skip instead of crashing)
+
+        i = j  # advance to next segment
+
     return pd.Series(x, index=series.index, dtype=float)

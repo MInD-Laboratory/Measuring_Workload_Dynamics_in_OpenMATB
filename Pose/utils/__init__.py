@@ -6,3 +6,6 @@ from .config import CFG, Config, \
     SAVE_REDUCED, SAVE_MASKED, SAVE_INTERP_FILTERED, SAVE_NORM, \
     SAVE_PER_FRAME_PROCRUSTES_GLOBAL, SAVE_PER_FRAME_PROCRUSTES_PARTICIPANT, \
     SAVE_PER_FRAME_ORIGINAL, OVERWRITE, OVERWRITE_TEMPLATES, SCIPY_AVAILABLE
+
+# Export preprocessing utilities (new module)
+from . import preprocessing_utils

@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 
 from .config import CFG, SCALE_BY_INTEROCULAR
-from .io_utils import detect_conf_prefix_case_insensitive, relevant_indices, find_real_colname
+from .preprocessing_utils import detect_conf_prefix_case_insensitive, relevant_indices, find_real_colname
 from .normalize_utils import interocular_series
 from .geometry_utils import procrustes_frame_to_template, angle_between_points
 from .window_utils import windows_indices, is_distance_like_metric, linear_metrics
@@ -229,17 +229,27 @@ def original_features_for_file(df_norm: pd.DataFrame) -> Dict[str, np.ndarray]:
     Rbot = avg2(col(47,"y"), col(48,"y"))                        # right eye: average bottom lid y
 
     # Blink aperture (average of available eyes)
-    blink = np.full(n, np.nan, float)                            # preallocate
-    L_ok = Ltop.notna() & Lbot.notna()                           # frames with valid left-lid pair
-    R_ok = Rtop.notna() & Rbot.notna()                           # frames with valid right-lid pair
+    blink = np.full(n, np.nan, float)          # final combined aperture (length n)
+
+    L_ok = Ltop.notna() & Lbot.notna()         # frames where left eyelid pair is valid
+    R_ok = Rtop.notna() & Rbot.notna()         # frames where right eyelid pair is valid
+
+    # Build full-length left/right apertures (NaN where invalid)
+    l_ap = np.full(n, np.nan, float)
+    r_ap = np.full(n, np.nan, float)
     if L_ok.any():
-        blink[L_ok] = np.abs(Ltop[L_ok].values - Lbot[L_ok].values)  # left aperture
+        l_ap[L_ok.values] = np.abs(Ltop[L_ok].values - Lbot[L_ok].values)
     if R_ok.any():
-        tmp = np.abs(Rtop[R_ok].values - Rbot[R_ok].values)          # right aperture
-        both = L_ok & R_ok                                           # frames where both eyes valid
-        blink[both] = (blink[both] + tmp[both]) / 2.0                # average L/R when both present
-        onlyR = R_ok & (~L_ok)                                       # frames where only right valid
-        blink[onlyR] = tmp[onlyR]                                    # use right-only when left missing
+        r_ap[R_ok.values] = np.abs(Rtop[R_ok].values - Rbot[R_ok].values)
+
+    # Combine per frame
+    both  = np.isfinite(l_ap) & np.isfinite(r_ap)   # both eyes valid
+    onlyL = np.isfinite(l_ap) & ~np.isfinite(r_ap)  # only left valid
+    onlyR = np.isfinite(r_ap) & ~np.isfinite(l_ap)  # only right valid
+
+    blink[both]  = (l_ap[both] + r_ap[both]) / 2.0  # average when both present
+    blink[onlyL] = l_ap[onlyL]                      # fallback to left-only
+    blink[onlyR] = r_ap[onlyR]                      # fallback to right-only
 
     # Mouth aperture (distance between landmarks 63 and 67)
     x63, y63 = col(63,"x"), col(63,"y")
@@ -384,7 +394,13 @@ def compute_linear_from_perframe_dir(per_frame_dir: Path,
             arr = df[k].to_numpy(float)
             if scale_by_interocular and is_distance_like_metric(k) and np.isfinite(io).any():
                 # Normalize distance-like metrics by interocular distance
-                scaled[k] = arr / io
+                # Protect against division by zero or very small values
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    scaled_arr = arr / io
+                    # Replace inf/nan from division with original unscaled values
+                    bad_mask = ~np.isfinite(scaled_arr) | (io < 1e-6)
+                    scaled_arr[bad_mask] = arr[bad_mask]
+                    scaled[k] = scaled_arr
             else:
                 scaled[k] = arr
 

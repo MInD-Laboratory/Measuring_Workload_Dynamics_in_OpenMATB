@@ -9,6 +9,11 @@ import random
 import numpy as np
 import pandas as pd
 from scipy.spatial import KDTree
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from pathlib import Path
+
+
 
 # ---------------- AMI  ----------------
 def ami(timeseries, min_lag: int, max_lag: int):
@@ -336,7 +341,7 @@ def ami_average_across_features(
     if plot:
         try:
             # lazy import to avoid circular import at module import time
-            from .viz_utils import plot_ami_subplots
+            from ...Pose.utils.viz_utils import plot_ami_subplots
             plot_ami_subplots(per_feature_curves, per_feature_avg, ncols=ncols, title_suffix=title_suffix)
         except Exception as e:
             summary_lines.append(f"Plot failed: {e}")
@@ -548,3 +553,324 @@ def _plot_fnn_subplots(per_feature_avg: Dict[str, pd.DataFrame],
 
     fig.tight_layout()
     plt.show()
+
+
+# ---------------- Cross-AMI  ----------------
+
+def _safe_minmax_scale(a: np.ndarray) -> np.ndarray:
+    a = a.astype(float)
+    finite = np.isfinite(a)
+    if not finite.any():
+        return np.zeros_like(a, dtype=float)
+    lo, hi = np.nanmin(a[finite]), np.nanmax(a[finite])
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return np.zeros_like(a, dtype=float)
+    out = (a - lo) / (hi - lo)
+    out[~finite] = np.nan
+    return out
+
+def cross_ami(timeseries1, timeseries2, min_lag: int, max_lag: int) -> np.ndarray:
+    """
+    Cross Average Mutual Information (X-AMI) between timeseries1 and timeseries2.
+
+    Returns an (L,2) array: column0 = lag, column1 = ami.
+    """
+    # convert inputs to 1D numpy arrays
+    if isinstance(timeseries1, (pd.Series, pd.DataFrame)):
+        timeseries1 = timeseries1.values.flatten()
+    if isinstance(timeseries2, (pd.Series, pd.DataFrame)):
+        timeseries2 = timeseries2.values.flatten()
+    x = np.asarray(timeseries1).astype(float)
+    y = np.asarray(timeseries2).astype(float)
+
+    # keep only indices where both finite (aligned)
+    finite = np.isfinite(x) & np.isfinite(y)
+    x = x[finite]; y = y[finite]
+    length = min(len(x), len(y))
+    if length == 0:
+        return np.column_stack((np.arange(0), np.zeros(0)))
+
+    # lag vector
+    if max_lag <= (length // 2 - 1):
+        lag = np.arange(max(1, min_lag), max_lag + 1)
+    else:
+        lag = np.arange(0, max(1, length // 2))
+
+    # normalize
+    x = _safe_minmax_scale(x)
+    y = _safe_minmax_scale(y)
+
+    ami_values = np.zeros(len(lag), dtype=float)
+
+    for i in range(len(lag)):
+        L = int(lag[i])
+        N = length - L
+        if N <= 2:
+            ami_values[i] = 0.0
+            continue
+
+        k = int(np.floor(1 + np.log2(N) + 0.5))
+        if k < 2 or np.nanvar(x[:N], ddof=1) == 0 or np.nanvar(y[L:], ddof=1) == 0:
+            ami_values[i] = 0.0
+            continue
+
+        xw = x[:N]
+        yw = y[L:]
+
+        ami_sum = 0.0
+        for k1 in range(1, k + 1):
+            x_lo, x_hi = (k1 - 1) / k, k1 / k
+            mask_x = (xw > x_lo) & (xw <= x_hi)
+            if not mask_x.any():
+                continue
+            px1 = mask_x.sum() / N
+
+            for k2 in range(1, k + 1):
+                y_lo, y_hi = (k2 - 1) / k, k2 / k
+                mask_y = (yw > y_lo) & (yw <= y_hi)
+                if not mask_y.any():
+                    continue
+                py2 = mask_y.sum() / N
+
+                ppp = (mask_x & mask_y).sum() / N
+                if ppp > 0 and px1 > 0 and py2 > 0:
+                    ami_sum += ppp * np.log2(ppp / (px1 * py2))
+
+        ami_values[i] = ami_sum
+
+    return np.column_stack((lag, ami_values))
+
+
+# ---------- helpers to batch across recordings / pair averaging -----------
+def average_cross_ami_across_recordings(
+    df_all: pd.DataFrame,
+    feat_x: str,
+    feat_y: str,
+    min_lag: int = 1,
+    max_lag: int = 100,
+    recording_col: str = "recording_id",
+    require_min_length: Optional[int] = None,
+    progress: bool = True,
+) -> Dict[str, Any]:
+    """
+    Compute cross_ami for each recording in df_all and return averaged AMI curve.
+
+    Returns dict:
+      {
+        "lags": np.ndarray,
+        "per_recording": { recording_id: ami_array (1D) , ... },
+        "mean": np.ndarray (mean across recordings),
+        "sem": np.ndarray (sem across recordings),
+        "n_recordings": int
+      }
+
+    Requirements:
+      - df_all must contain recording_col, and columns feat_x, feat_y.
+    """
+    if feat_x not in df_all.columns or feat_y not in df_all.columns:
+        raise ValueError(f"Features not present in df_all: {feat_x}, {feat_y}")
+
+    per_rec = {}
+    recs = df_all.groupby(recording_col, sort=False)
+    outer = recs if not progress else tqdm(recs, desc="Cross-AMI recordings")
+
+    computed = []
+    lags = None
+    for rid, g in outer:
+        xa = pd.to_numeric(g[feat_x], errors="coerce").values
+        ya = pd.to_numeric(g[feat_y], errors="coerce").values
+        # aligned finite region inside cross_ami will trim to overlapping finite region
+        if require_min_length is not None:
+            finite = np.isfinite(xa) & np.isfinite(ya)
+            if finite.sum() < require_min_length:
+                continue
+        arr = cross_ami(xa, ya, min_lag=min_lag, max_lag=max_lag)
+        if arr is None or arr.size == 0:
+            continue
+        per_rec[rid] = arr[:, 1]
+        computed.append(arr[:, 1])
+        if lags is None:
+            lags = arr[:, 0]
+
+    if not computed:
+        return {"lags": np.array([], dtype=int), "per_recording": {}, "mean": np.array([]), "sem": np.array([]), "n_recordings": 0}
+
+    stacked = np.vstack(computed)  # n_rec x n_lags
+    mean = np.nanmean(stacked, axis=0)
+    sem = np.nanstd(stacked, ddof=1, axis=0) / np.sqrt(stacked.shape[0])
+
+    return {"lags": lags.astype(int), "per_recording": per_rec, "mean": mean, "sem": sem, "n_recordings": stacked.shape[0]}
+
+
+# ---------- plotting / saving helper ------------------------------------
+
+# ---------- core cross-AMI implementation (ported) -----------------------
+def _safe_minmax_scale(a: np.ndarray) -> np.ndarray:
+    a = a.astype(float)
+    finite = np.isfinite(a)
+    if not finite.any():
+        return np.zeros_like(a, dtype=float)
+    lo, hi = np.nanmin(a[finite]), np.nanmax(a[finite])
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return np.zeros_like(a, dtype=float)
+    out = (a - lo) / (hi - lo)
+    out[~finite] = np.nan
+    return out
+
+def cross_ami(timeseries1, timeseries2, min_lag: int, max_lag: int) -> np.ndarray:
+    """
+    Cross Average Mutual Information (X-AMI) between timeseries1 and timeseries2.
+
+    Returns an (L,2) array: column0 = lag, column1 = ami.
+    """
+    # convert inputs to 1D numpy arrays
+    if isinstance(timeseries1, (pd.Series, pd.DataFrame)):
+        timeseries1 = timeseries1.values.flatten()
+    if isinstance(timeseries2, (pd.Series, pd.DataFrame)):
+        timeseries2 = timeseries2.values.flatten()
+    x = np.asarray(timeseries1).astype(float)
+    y = np.asarray(timeseries2).astype(float)
+
+    # keep only indices where both finite (aligned)
+    finite = np.isfinite(x) & np.isfinite(y)
+    x = x[finite]; y = y[finite]
+    length = min(len(x), len(y))
+    if length == 0:
+        return np.column_stack((np.arange(0), np.zeros(0)))
+
+    # lag vector
+    if max_lag <= (length // 2 - 1):
+        lag = np.arange(max(1, min_lag), max_lag + 1)
+    else:
+        lag = np.arange(0, max(1, length // 2))
+
+    # normalize
+    x = _safe_minmax_scale(x)
+    y = _safe_minmax_scale(y)
+
+    ami_values = np.zeros(len(lag), dtype=float)
+
+    for i in range(len(lag)):
+        L = int(lag[i])
+        N = length - L
+        if N <= 2:
+            ami_values[i] = 0.0
+            continue
+
+        k = int(np.floor(1 + np.log2(N) + 0.5))
+        if k < 2 or np.nanvar(x[:N], ddof=1) == 0 or np.nanvar(y[L:], ddof=1) == 0:
+            ami_values[i] = 0.0
+            continue
+
+        xw = x[:N]
+        yw = y[L:]
+
+        ami_sum = 0.0
+        for k1 in range(1, k + 1):
+            x_lo, x_hi = (k1 - 1) / k, k1 / k
+            mask_x = (xw > x_lo) & (xw <= x_hi)
+            if not mask_x.any():
+                continue
+            px1 = mask_x.sum() / N
+
+            for k2 in range(1, k + 1):
+                y_lo, y_hi = (k2 - 1) / k, k2 / k
+                mask_y = (yw > y_lo) & (yw <= y_hi)
+                if not mask_y.any():
+                    continue
+                py2 = mask_y.sum() / N
+
+                ppp = (mask_x & mask_y).sum() / N
+                if ppp > 0 and px1 > 0 and py2 > 0:
+                    ami_sum += ppp * np.log2(ppp / (px1 * py2))
+
+        ami_values[i] = ami_sum
+
+    return np.column_stack((lag, ami_values))
+
+
+# ---------- helpers to batch across recordings / pair averaging -----------
+def average_cross_ami_across_recordings(
+    df_all: pd.DataFrame,
+    feat_x: str,
+    feat_y: str,
+    min_lag: int = 1,
+    max_lag: int = 100,
+    recording_col: str = "recording_id",
+    require_min_length: Optional[int] = None,
+    progress: bool = True,
+) -> Dict[str, Any]:
+    """
+    Compute cross_ami for each recording in df_all and return averaged AMI curve.
+
+    Returns dict:
+      {
+        "lags": np.ndarray,
+        "per_recording": { recording_id: ami_array (1D) , ... },
+        "mean": np.ndarray (mean across recordings),
+        "sem": np.ndarray (sem across recordings),
+        "n_recordings": int
+      }
+
+    Requirements:
+      - df_all must contain recording_col, and columns feat_x, feat_y.
+    """
+    if feat_x not in df_all.columns or feat_y not in df_all.columns:
+        raise ValueError(f"Features not present in df_all: {feat_x}, {feat_y}")
+
+    per_rec = {}
+    recs = df_all.groupby(recording_col, sort=False)
+    outer = recs if not progress else tqdm(recs, desc="Cross-AMI recordings")
+
+    computed = []
+    lags = None
+    for rid, g in outer:
+        xa = pd.to_numeric(g[feat_x], errors="coerce").values
+        ya = pd.to_numeric(g[feat_y], errors="coerce").values
+        # aligned finite region inside cross_ami will trim to overlapping finite region
+        if require_min_length is not None:
+            finite = np.isfinite(xa) & np.isfinite(ya)
+            if finite.sum() < require_min_length:
+                continue
+        arr = cross_ami(xa, ya, min_lag=min_lag, max_lag=max_lag)
+        if arr is None or arr.size == 0:
+            continue
+        per_rec[rid] = arr[:, 1]
+        computed.append(arr[:, 1])
+        if lags is None:
+            lags = arr[:, 0]
+
+    if not computed:
+        return {"lags": np.array([], dtype=int), "per_recording": {}, "mean": np.array([]), "sem": np.array([]), "n_recordings": 0}
+
+    stacked = np.vstack(computed)  # n_rec x n_lags
+    mean = np.nanmean(stacked, axis=0)
+    sem = np.nanstd(stacked, ddof=1, axis=0) / np.sqrt(stacked.shape[0])
+
+    return {"lags": lags.astype(int), "per_recording": per_rec, "mean": mean, "sem": sem, "n_recordings": stacked.shape[0]}
+
+
+# ---------- plotting / saving helper ------------------------------------
+def plot_and_save_cross_ami(lags: np.ndarray, mean_curve: np.ndarray, sem: Optional[np.ndarray] = None,
+                            title: Optional[str] = None, out_path: Optional[Path] = None, show: bool = True):
+    """
+    Plot mean cross-AMI with optional SEM ribbon and optionally save figure.
+    """
+    plt.figure(figsize=(7, 3.5))
+    plt.plot(lags, mean_curve, marker="o", linewidth=1)
+    if sem is not None and len(sem) == len(mean_curve):
+        plt.fill_between(lags, mean_curve - sem, mean_curve + sem, alpha=0.2)
+    if title:
+        plt.title(title)
+    plt.xlabel("Lag (samples)")
+    plt.ylabel("Cross AMI")
+    plt.grid(True)
+    plt.tight_layout()
+    if out_path is not None:
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(out_path, dpi=300)
+    if show:
+        plt.show()
+    plt.close()
+

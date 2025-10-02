@@ -5,9 +5,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from matplotlib.patches import Patch
-from typing import List, Optional, Tuple, Dict
-from .nl_utils import first_local_minimum
-from .io_utils import relevant_indices, detect_conf_prefix_case_insensitive, lm_triplet_colnames  # if you exported lm_triplet_colnames
+from typing import List, Optional, Tuple
+
+from .preprocessing_utils import relevant_indices, detect_conf_prefix_case_insensitive, lm_triplet_colnames
 from .features_utils import procrustes_frame_to_template  # if separated; else import the function wherever it lives
 from .nb_utils import find_col
 
@@ -245,69 +245,4 @@ def create_interactive_pose_timeseries_viewer(
              transform=fig.transFigure, va='top', fontsize=10,
              bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.8))
     plt.show()
-    return fig
-
-
-def plot_ami_subplots(
-    per_feature_curves: Dict[str, Dict[str, pd.DataFrame]],
-    per_feature_avg: Dict[str, Optional[pd.DataFrame]],
-    ncols: int = 2,
-    figsize=(12, 6),
-    title_suffix: str = ""
-):
-    """
-    Render AMI subplots for multiple features.
-    per_feature_curves: {feature: {recording_id: df(lag, ami)}}
-    per_feature_avg:    {feature: df(lag, ami_mean, ami_sem) or None}
-    """
-    features = list(per_feature_curves.keys())
-    if not features:
-        print("No features to plot.")
-        return None
-
-    n = len(features)
-    nrows = int(np.ceil(n / ncols))
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(figsize[0], figsize[1]*nrows), squeeze=False)
-    axes = axes.flatten()
-
-    for ax, feat in zip(axes, features):
-        # plot individual curves (light)
-        curves = per_feature_curves.get(feat, {})
-        for rid, dfc in curves.items():
-            ax.plot(dfc["lag"].values, dfc["ami"].values, alpha=0.25, linewidth=1)
-
-        # average curve + SEM
-        avg = per_feature_avg.get(feat, None)
-        if avg is not None and not avg.empty:
-            lags = avg["lag"].values
-            m = avg["ami_mean"].values
-            s = avg["ami_sem"].values
-            ax.plot(lags, m, linewidth=2.0, label="mean")
-            if np.isfinite(s).any():
-                ax.fill_between(lags, m - s, m + s, alpha=0.2, label="± SEM")
-
-            # first local minimum marker
-            idx = first_local_minimum(m, min_lag=1)
-            if idx is not None and 0 <= idx < len(lags):
-                ax.axvline(lags[idx], linestyle="--", linewidth=1.5)
-                ax.text(lags[idx], np.nanmin(m), f"τ*={int(lags[idx])}", rotation=90,
-                        va="bottom", ha="right", fontsize=8)
-
-        ax.set_title(f"{feat}", fontweight="bold")
-        ax.set_xlabel("Lag (frames)")
-        ax.set_ylabel("AMI (bits)")
-        ax.set_ylim(0, 2.5)
-        ax.grid(True, alpha=0.25)
-        ax.legend(loc="best", fontsize=8)
-
-    # any leftover axes
-    for j in range(len(features), len(axes)):
-        axes[j].axis("off")
-
-    suptitle = "Auto Mutual Information"
-    if title_suffix:
-        suptitle += f" — {title_suffix}"
-    fig.suptitle(suptitle, y=0.995, fontsize=14, fontweight="bold")
-    fig.tight_layout()
     return fig
