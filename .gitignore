@@ -1,5 +1,3 @@
-data/preprocessed_pose
-data/raw_pose
 figs/backup/
 extra/
 __pycache__/
@@ -20,3 +18,12 @@ Pose/data/processed/experimental/templates
 Pose/data/processed/experimental/reduced
 Pose/data/processed/experimental/features
 Performance/data/raw
+Performance/figs/
+Performance/tables/
+Pose/data/raw_data/
+Pose/processed_data/baseline/features/
+Pose/data/processed_data/experimental/features/
+Pose/data/processed_data/baseline/
+Pose/data/processed_data/experimental/
+Pose/figs/
+Pose/tables/
