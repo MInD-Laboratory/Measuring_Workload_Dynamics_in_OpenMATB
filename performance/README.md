@@ -2,7 +2,9 @@
 
 This subfolder contains code, data, tables, and figures used for the analysis of task performance across baseline and experimental sessions.
 
----
+![combined](https://github.com/user-attachments/assets/900afee7-d457-45b9-9a81-d13feb7a75f4)
+
+
 
 ## Folder Structure
 
