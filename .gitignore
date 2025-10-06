@@ -1,3 +1,4 @@
+# General ignores
 figs/backup/
 extra/
 __pycache__/
@@ -10,21 +11,16 @@ __pycache__/
 data/model_output/results
 data/test_preprocessed_pose
 gnn/
-Pose/data/raw
-Pose/data/processed/experimental/interp_filtered
-Pose/data/processed/experimental/masked
-Pose/data/processed/experimental/norm_screen
-Pose/data/processed/experimental/templates
-Pose/data/processed/experimental/reduced
-Pose/data/processed/experimental/features
 Performance/data/raw
 Performance/figs/
 Performance/tables/
-Pose/data/raw_data/
-Pose/processed_data/baseline/features/
-Pose/data/processed_data/experimental/features/
-Pose/data/processed_data/baseline/
-Pose/data/processed_data/experimental/
+Pose/data/raw_data
 Pose/figs/
-Pose/tables/
-Pose/data
+
+# Ignore everything under processed_data except linear_metrics
+Pose/data/processed_data/**
+!Pose/data/processed_data/experimental/
+!Pose/data/processed_data/experimental/linear_metrics/
+!Pose/data/processed_data/baseline/
+!Pose/data/processed_data/baseline/linear_metrics/
+
