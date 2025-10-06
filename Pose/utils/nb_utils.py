@@ -10,6 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from typing import Dict, List
+from utils.stats_utils import pretty_metric, fmt
 
 # ---------- Output file discovery and status checking ----------
 def outputs_exist(base: str | Path) -> dict:
@@ -352,3 +353,49 @@ def holm_bonferroni(pvals: Dict[str, float]) -> Dict[str, float]:
 
     # Return in original key order
     return {k: corrected[k] for k in pvals.keys()}
+
+def build_rqa_table(results, out_file):
+    """Build LaTeX table with β and p-values for each contrast."""
+    lines = [
+        r"\begin{tabular}{llcc|cc|cc}",
+        r"\toprule",
+        r"Data Type & Metric & $\beta_{\text{M}}$ & $p_{\text{M}}$ & "
+        r"$\beta_{\text{H}}$ & $p_{\text{H}}$ & $\beta_{\text{H--M}}$ & $p_{\text{H--M}}$ \\",
+        r"\midrule"
+    ]
+    
+    for col_name in sorted(results.keys()):
+        metric_results = results[col_name]
+        rows = []
+        
+        for metric in sorted(metric_results.keys()):
+            ests, pvals, _, _ = metric_results[metric]
+            
+            # Extract contrasts: M-L, H-L, H-M
+            b_m = ests.get(("L", "M"))
+            p_m = pvals.get(("L", "M"))
+            b_h = ests.get(("L", "H"))
+            p_h = pvals.get(("L", "H"))
+            b_hm = ests.get(("M", "H"))
+            p_hm = pvals.get(("M", "H"))
+            
+            Bm, Pm = fmt(b_m, p_m)
+            Bh, Ph = fmt(b_h, p_h)
+            Bhm, Phm = fmt(b_hm, p_hm)
+            
+            rows.append((pretty_metric(metric), Bm, Pm, Bh, Ph, Bhm, Phm))
+        
+        # Write rows for this data type
+        first = True
+        for (metric_name, Bm, Pm, Bh, Ph, Bhm, Phm) in rows:
+            left = f"\\multirow{{{len(rows)}}}{{*}}{{{col_name}}}" if first else ""
+            lines.append(
+                f"{left} & {metric_name} & {Bm} & {Pm} & {Bh} & {Ph} & {Bhm} & {Phm} \\\\"
+            )
+            first = False
+        lines.append(r"\midrule")
+    
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    
+    Path(out_file).write_text("\n".join(lines), encoding="utf-8")
+    print(f"\n✅ Table written to: {out_file}")

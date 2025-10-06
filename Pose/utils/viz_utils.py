@@ -5,11 +5,235 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from matplotlib.patches import Patch
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, Optional, Tuple, Sequence, Any, List
+from dataclasses import dataclass, field
+from utils.preprocessing_utils import relevant_indices, detect_conf_prefix_case_insensitive, lm_triplet_colnames
+from utils.features_utils import procrustes_frame_to_template
+from utils.nb_utils import find_col
+from rqa.crossRQA import crossRQA
+from rqa.utils import norm_utils, rqa_utils_cpp, plot_utils
 
-from .preprocessing_utils import relevant_indices, detect_conf_prefix_case_insensitive, lm_triplet_colnames
-from .features_utils import procrustes_frame_to_template  # if separated; else import the function wherever it lives
-from .nb_utils import find_col
+COND_ORDER = ["L", "M", "H"]
+
+# --- Recurrence Plot Configuration ---
+@dataclass
+class RecurrenceConfig:
+    """Configuration for recurrence plot generation."""
+    preprocessed_dir: Path
+    figs_dir: Path
+    rqa_params: Dict[str, Any] = field(default_factory=lambda: {
+        "norm": 1,
+        "eDim": 4,
+        "tLag": 20,
+        "rescaleNorm": 1,
+        "radius": 0.2,
+        "minl": 4,
+        "plotMode": "rp",
+        "pointSize": 2,
+        "showMetrics": True,
+        "doStatsFile": False,
+        "saveFig": True,
+    })
+    crqa_params: Dict[str, Any] = field(default_factory=lambda: {
+        "norm": 1,
+        "eDim": 4,
+        "tLag": 40,
+        "rescaleNorm": 1,
+        "radius": 0.3,
+        "minl": 2,
+        "plotMode": "rp",
+        "pointSize": 2,
+        "showMetrics": True,
+        "doStatsFile": False,
+        "saveFig": True,
+    })
+    
+    def __post_init__(self):
+        self.figs_dir.mkdir(parents=True, exist_ok=True)
+
+
+def find_interesting_window(
+    df: pd.DataFrame,
+    column: str,
+    metric: str = "perc_recur",
+    condition: str = "H"
+) -> Optional[Tuple[str, str, int, int, int]]:
+    """
+    Find a window with interesting recurrence pattern.
+    
+    Returns:
+        Tuple of (participant, condition, window_index, window_start, window_end)
+        or None if no data found
+    """
+    dsub = df[(df["column"] == column) & (df["condition"] == condition)].copy()
+    
+    if dsub.empty:
+        return None
+    
+    # Sort by metric to find most interesting windows
+    dsub = dsub.sort_values(metric, ascending=False)
+    
+    # Get top window
+    row = dsub.iloc[0]
+    return (
+        str(row["participant"]),
+        str(row["condition"]),
+        int(row["window_index"]),
+        int(row["window_start"]),
+        int(row["window_end"])
+    )
+
+
+def generate_rqa_plot(
+    config: RecurrenceConfig,
+    participant: str,
+    condition: str,
+    column: str,
+    window_start: int,
+    window_end: int
+) -> Optional[Path]:
+    """
+    Generate RQA plot for a specific window using the library's plotting.
+    
+    Args:
+        config: RecurrenceConfig with paths and parameters
+        participant: Participant ID
+        condition: Condition code (L/M/H)
+        column: Data column name
+        window_start: Start frame index
+        window_end: End frame index
+        
+    Returns:
+        Path to saved figure or None if error
+    """
+    # Load the preprocessed data file
+    data_file = config.preprocessed_dir / f"{participant}_{condition}_perframe.csv"
+    
+    if not data_file.exists():
+        print(f"  ⚠️  Data file not found: {data_file}")
+        return None
+    
+    df_data = pd.read_csv(data_file)
+    
+    if column not in df_data.columns:
+        print(f"  ⚠️  Column '{column}' not in data file")
+        return None
+    
+    # Extract window
+    window = df_data.iloc[window_start:window_end][column].values
+    
+    if not np.isfinite(window).all():
+        print(f"  ⚠️  Window contains non-finite values")
+        return None
+    
+    # Prepare parameters with save path
+    params = config.rqa_params.copy()
+    out_file = config.figs_dir / f"rqa_{column}_P{participant}_{condition}_w{window_start}-{window_end}.png"
+    params['savePath'] = str(out_file)
+    
+    # Normalize data
+    data_norm = norm_utils.normalize_data(window, params["norm"])
+    
+    # Compute distance matrix
+    ds = rqa_utils_cpp.rqa_dist(
+        data_norm, data_norm,
+        dim=params["eDim"],
+        lag=params["tLag"]
+    )
+    
+    # Compute RQA stats and get recurrence plot
+    td, rs, mats, err = rqa_utils_cpp.rqa_stats(
+        ds["d"],
+        rescale=params["rescaleNorm"],
+        rad=params["radius"],
+        diag_ignore=params["minl"],
+        minl=params["minl"],
+        rqa_mode="auto",
+    )
+    
+    if err != 0:
+        print(f"  ⚠️  RQA error code: {err}")
+        return None
+    
+    # Use the library's plotting function
+    plot_utils.plot_rqa_results(
+        dataX=data_norm,
+        dataY=data_norm,
+        td=td,
+        plot_mode=params["plotMode"],
+        point_size=params["pointSize"],
+        save_path=str(out_file)
+    )
+    
+    print(f"  ✅ RQA plot saved: {out_file.name}")
+    print(f"      %REC={rs['perc_recur']:.2f}, %DET={rs['perc_determ']:.2f}")
+    return out_file
+
+
+def generate_crqa_plot(
+    config: RecurrenceConfig,
+    participant: str,
+    condition: str,
+    col_x: str,
+    col_y: str,
+    window_start: int,
+    window_end: int,
+    label: str
+) -> Optional[Path]:
+    """
+    Generate CRQA plot for a specific window using the library's plotting.
+    
+    Args:
+        config: RecurrenceConfig with paths and parameters
+        participant: Participant ID
+        condition: Condition code (L/M/H)
+        col_x: First data column name
+        col_y: Second data column name
+        window_start: Start frame index
+        window_end: End frame index
+        label: Label for output filename
+        
+    Returns:
+        Path to saved figure or None if error
+    """
+    data_file = config.preprocessed_dir / f"{participant}_{condition}_perframe.csv"
+    
+    if not data_file.exists():
+        print(f"  ⚠️  Data file not found: {data_file}")
+        return None
+    
+    df_data = pd.read_csv(data_file)
+    
+    if col_x not in df_data.columns or col_y not in df_data.columns:
+        print(f"  ⚠️  Columns '{col_x}' or '{col_y}' not in data file")
+        return None
+    
+    # Extract window
+    window_data = df_data.iloc[window_start:window_end]
+    x = window_data[col_x].values
+    y = window_data[col_y].values
+    
+    if not (np.isfinite(x).all() and np.isfinite(y).all()):
+        print(f"  ⚠️  Window contains non-finite values")
+        return None
+    
+    # Prepare parameters with save path
+    params = config.crqa_params.copy()
+    out_file = config.figs_dir / f"crqa_{label}_P{participant}_{condition}_w{window_start}-{window_end}.png"
+    params['savePath'] = str(out_file)
+    
+    # Use the crossRQA function from the library
+    td, rs, mats, err = crossRQA(x, y, params)
+    
+    if err != 0:
+        print(f"  ⚠️  CRQA error code: {err}")
+        return None
+    
+    print(f"  ✅ CRQA plot saved: {out_file.name}")
+    print(f"      %REC={rs['perc_recur']:.2f}, %DET={rs['perc_determ']:.2f}")
+    return out_file
+
 
 # --- Build Procrustes-aligned coordinates for a slice (and a couple features) ---
 def procrustes_transform_series(
@@ -109,6 +333,7 @@ def procrustes_transform_series(
         "mouth_dist": mouth_dist,
     }
     return df_pose, feats
+
 
 # --- Interactive viewer ---
 def create_interactive_pose_timeseries_viewer(
@@ -245,4 +470,175 @@ def create_interactive_pose_timeseries_viewer(
              transform=fig.transFigure, va='top', fontsize=10,
              bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.8))
     plt.show()
+    return fig
+
+
+def sem(series):
+    """Calculate standard error of the mean."""
+    s = pd.Series(series).astype(float)
+    return s.std(ddof=1) / np.sqrt(s.count())
+
+
+def create_2x2_figure(df, stats_results, plot_specs=None):
+    """
+    Create a 2x2 figure showing key RQA/CRQA results.
+    
+    Args:
+        df: DataFrame with RQA results
+        stats_results: Dictionary of statistical results
+        plot_specs: List of 4 tuples, each containing:
+            (col_name, metric, title, ylabel, ylim)
+            If None, uses default specifications
+    """
+    # Default specifications if none provided
+    if plot_specs is None:
+        plot_specs = [
+            ("center_face_magnitude", "perc_recur", 
+             "Face Movement — % Recurrence", "% Recurrence", None),
+            ("blink_aperture", "perc_determ",
+             "Blink — % Determinism", "% Determinism", None),
+            ("crqa_head_pupil_mag", "perc_recur",
+             "Head–Pupil CRQA (Magnitude)", "% Recurrence", None),
+            ("crqa_head_pupil_x", "perc_recur",
+             "Head–Pupil CRQA (X-axis)", "% Recurrence", None),
+        ]
+    
+    fig, axes = plt.subplots(2, 2, figsize=(10, 10), constrained_layout=True)
+    axes_flat = axes.flatten()
+    
+    def barplot(ax, col_name, metric, title, ylabel, ylim=None):
+        """Helper to create one barplot panel."""
+        dsub = df[df["column"] == col_name].copy()
+        agg = dsub.groupby("condition")[metric].agg(["mean", sem]).reindex(COND_ORDER)
+        
+        idx = np.arange(len(COND_ORDER))
+        means = agg["mean"].to_numpy(dtype=float)
+        errs = agg["sem"].to_numpy(dtype=float)
+        
+        ax.bar(idx, means, yerr=errs, capsize=5, width=0.7, 
+               color=['#4575b4', "#ffffbf", '#d73027'])
+        ax.set_xticks(idx)
+        ax.set_xticklabels(COND_ORDER, fontsize=12, fontweight='bold')
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_ylabel(ylabel, fontsize=11, fontweight='bold')
+        ax.set_xlim(-0.5, len(COND_ORDER) - 0.5)
+        ax.spines[['top', 'right']].set_visible(False)
+        
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        
+        # Add significance stars if available
+        if col_name in stats_results and metric in stats_results[col_name]:
+            _, pvals, _, _ = stats_results[col_name][metric]
+            
+            # Get y position for stars
+            y_max = max(means + errs)
+            y_range = y_max - min(means - errs)
+            
+            # Check each pairwise comparison
+            comparisons = [
+                (0, 1, pvals.get(("L", "M"))),  # L vs M
+                (1, 2, pvals.get(("M", "H"))),  # M vs H
+                (0, 2, pvals.get(("L", "H")))   # L vs H
+            ]
+            
+            offset = 0
+            for i, j, p in comparisons:
+                if p is not None and not np.isnan(p) and p < 0.05:
+                    stars = '***' if p < 0.001 else '**' if p < 0.01 else '*'
+                    y = y_max + 0.1 * y_range + offset * 0.15 * y_range
+                    ax.plot([idx[i], idx[j]], [y, y], 'k-', lw=1.5)
+                    ax.text((idx[i] + idx[j]) / 2, y, stars, 
+                           ha='center', va='bottom', fontsize=11, fontweight='bold')
+                    offset += 1
+    
+    # Create each panel based on specifications
+    for i, spec in enumerate(plot_specs[:4]):  # Limit to 4 plots
+        col_name, metric, title, ylabel, ylim = spec
+        
+        # Check if column exists in data
+        if col_name in df["column"].unique():
+            barplot(axes_flat[i], col_name, metric, title, ylabel, ylim)
+        else:
+            # If column doesn't exist, show warning text
+            axes_flat[i].text(0.5, 0.5, f'Column "{col_name}" not found', 
+                            transform=axes_flat[i].transAxes, 
+                            ha='center', va='center', fontsize=12)
+            axes_flat[i].set_title(title, fontsize=13, fontweight='bold')
+    
+    return fig
+    """
+    Create a 2x2 figure showing key RQA/CRQA results.
+    Adjust the specific columns and metrics as needed for your analysis.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(10, 10), constrained_layout=True)
+    
+    def barplot(ax, col_name, metric, title, ylabel, ylim=None):
+        """Helper to create one barplot panel."""
+        dsub = df[df["column"] == col_name].copy()
+        agg = dsub.groupby("condition")[metric].agg(["mean", sem]).reindex(COND_ORDER)
+        
+        idx = np.arange(len(COND_ORDER))
+        means = agg["mean"].to_numpy(dtype=float)
+        errs = agg["sem"].to_numpy(dtype=float)
+        
+        ax.bar(idx, means, yerr=errs, capsize=5, width=0.7, color=['#4575b4', "#ffffbf", '#d73027'])
+        ax.set_xticks(idx)
+        ax.set_xticklabels(COND_ORDER, fontsize=12, fontweight='bold')
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_ylabel(ylabel, fontsize=11, fontweight='bold')
+        ax.set_xlim(-0.5, len(COND_ORDER) - 0.5)
+        ax.spines[['top', 'right']].set_visible(False)
+        
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        
+        # Add significance stars if available
+        if col_name in stats_results and metric in stats_results[col_name]:
+            _, pvals, _, _ = stats_results[col_name][metric]
+            
+            # Get y position for stars
+            y_max = max(means + errs)
+            y_range = y_max - min(means - errs)
+            
+            # Check each pairwise comparison
+            comparisons = [
+                (0, 1, pvals.get(("L", "M"))),  # L vs M
+                (1, 2, pvals.get(("M", "H"))),  # M vs H
+                (0, 2, pvals.get(("L", "H")))   # L vs H
+            ]
+            
+            offset = 0
+            for i, j, p in comparisons:
+                if p is not None and not np.isnan(p) and p < 0.05:
+                    stars = '***' if p < 0.001 else '**' if p < 0.01 else '*'
+                    y = y_max + 0.1 * y_range + offset * 0.15 * y_range
+                    ax.plot([idx[i], idx[j]], [y, y], 'k-', lw=1.5)
+                    ax.text((idx[i] + idx[j]) / 2, y, stars, 
+                           ha='center', va='bottom', fontsize=11, fontweight='bold')
+                    offset += 1
+    
+    # Customize these panels for your specific analysis
+    # Example: showing different columns and metrics
+    
+    # Panel 1: RQA on a specific measurement
+    if "center_face_magnitude" in df["column"].unique():
+        barplot(axes[0, 0], "center_face_magnitude", "perc_recur",
+               "Face Movement — % Recurrence", "% Recurrence")
+    
+    # Panel 2: RQA on another measurement
+    if "blink_aperture" in df["column"].unique():
+        barplot(axes[0, 1], "blink_aperture", "perc_determ",
+               "Blink — % Determinism", "% Determinism")
+    
+    # Panel 3: CRQA magnitude
+    if "crqa_head_pupil_mag" in df["column"].unique():
+        barplot(axes[1, 0], "crqa_head_pupil_mag", "perc_recur",
+               "Head–Pupil CRQA (Magnitude)", "% Recurrence")
+    
+    # Panel 4: CRQA on x-axis
+    if "crqa_head_pupil_x" in df["column"].unique():
+        barplot(axes[1, 1], "crqa_head_pupil_x", "perc_recur",
+               "Head–Pupil CRQA (X-axis)", "% Recurrence")
+    
     return fig

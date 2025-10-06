@@ -90,6 +90,7 @@ def run_rpy2_lmer(df: pd.DataFrame, dv: str, adjust: str = "none") -> Tuple[Dict
     import rpy2.robjects as robjects
     from rpy2.robjects.conversion import localconverter
     from rpy2.robjects import pandas2ri
+    robjects.r('emmeans::emm_options(lmer.df = "satterthwaite", lmerTest.limit = 4000)')
 
     # Prepare dataframe: ensure needed cols exist, set defaults if missing
     d = df.copy()
@@ -341,3 +342,49 @@ def build_table_with_emmeans(df: pd.DataFrame, out_tex: str | Path, figs_dir: st
     out_tex.write_text("\n".join(lines), encoding="utf-8")
     print(f"[OK] wrote {out_tex} | modeled={modeled}, skipped={skipped}")
     return modeled, skipped
+
+
+
+
+def pretty_metric(name: str) -> str:
+    """Format metric names for display."""
+    return name.replace("_", " ").title()
+
+def run_stats_by_column(df, metrics):
+    """
+    Run mixed models for each column (data type) and metric.
+    Returns nested dict: results[column][metric] = (ests, pvals, means, cis)
+    """
+    results = defaultdict(dict)
+    
+    for col_name in sorted(df["column"].dropna().unique()):
+        print(f"\nAnalyzing: {col_name}")
+        dsub = df[df["column"] == col_name].copy()
+        
+        # Need at least 2 conditions for contrasts
+        n_conds = len(set(dsub["condition"].dropna().unique()))
+        if n_conds < 2:
+            print(f"  Skipping (only {n_conds} condition(s))")
+            continue
+        
+        for metric in metrics:
+            if metric not in dsub.columns:
+                continue
+                
+            tmp = dsub[["participant", "condition", "window_index", metric]].dropna()
+            if tmp.empty or len(set(tmp["condition"].unique())) < 2:
+                continue
+            
+            try:
+                ests, pvals, means, cis = run_rpy2_lmer(
+                    tmp.rename(columns={metric: "dv"}),
+                    "dv",
+                    adjust="none"
+                )
+                results[col_name][metric] = (ests, pvals, means, cis)
+                print(f"  ✓ {metric}")
+            except Exception as e:
+                print(f"  ✗ {metric}: {e}")
+    
+    return results
+
