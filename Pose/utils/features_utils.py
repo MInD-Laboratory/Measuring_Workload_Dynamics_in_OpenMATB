@@ -338,6 +338,22 @@ def original_features_for_file(df_norm: pd.DataFrame) -> Dict[str, np.ndarray]:
         "center_face_y": cfm_y
     }
 
+# --------- Per-frame derivatives --------------------------------------------
+def add_perframe_derivatives(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Append *_vel and *_acc columns (via np.gradient) for every numeric column.
+    Keeps everything else untouched. No fps scaling (matches your earlier gradient use).
+    """
+    out = df.copy()
+    num_cols = out.select_dtypes(include=[np.number]).columns
+    for col in num_cols:
+        s = out[col].to_numpy()
+        v = np.gradient(s)
+        a = np.gradient(v)
+        out[f"{col}_vel"] = v
+        out[f"{col}_acc"] = a
+    return out
+
 # --------- Linear-from-perframe helper --------------------------------------
 def compute_linear_from_perframe_dir(per_frame_dir: Path,
                                      out_csv: Path,
@@ -346,73 +362,45 @@ def compute_linear_from_perframe_dir(per_frame_dir: Path,
                                      window_overlap: float,
                                      scale_by_interocular: bool = True) -> Dict[str, int]:
     """
-    Compute linear (time-domain) metrics from per-frame pose/behavioral data
-    stored in individual CSV files.
-
-    Parameters
-    ----------
-    per_frame_dir : Path
-        Directory containing per-frame CSVs (one per trial/participant/condition).
-    out_csv : Path
-        Output CSV path for aggregated windowed metrics.
-    fps : int
-        Sampling rate (frames per second).
-    window_seconds : int
-        Length of each analysis window in seconds.
-    window_overlap : float
-        Fraction of overlap between consecutive windows (0.0 = no overlap, 0.5 = 50% overlap).
-    scale_by_interocular : bool, default=True
-        Whether to normalize distance-like metrics by interocular distance
-        (to compensate for scaling differences between participants).
-
-    Returns
-    -------
-    Dict[str, int]
-        Dictionary mapping metric name → number of dropped windows due to invalid data.
+    Windowed summaries over per-frame columns already on disk (values, *_vel, *_acc).
+    Saves per-column min/max/mean/rms. Mean is skipped for zscore variants.
     """
-    rows = []                       # Collect results for all windows across all files
-    drops_agg: Dict[str, int] = {}  # Count of dropped windows per metric
-    files = sorted(per_frame_dir.glob("*.csv"))  # All per-frame CSV files in directory
+    rows = []
+    drops_agg: Dict[str, int] = {}
+    files = sorted(per_frame_dir.glob("*.csv"))
 
-    # --- Process each per-frame CSV file ---
+    # Heuristic: subfolder name encodes normalization (e.g., ...__zscore)
+    norm_is_z = "__zscore" in per_frame_dir.name.lower()
+
     for pf in files:
         df = pd.read_csv(pf)
 
-        # Participant ID and condition labels, if present
         pid = str(df["participant"].iloc[0]) if "participant" in df.columns and len(df) else "NA"
         cond = str(df["condition"].iloc[0]) if "condition" in df.columns and len(df) else "NA"
 
-        # Metric columns = everything except metadata columns
-        metric_cols = [c for c in df.columns if c not in ("participant","condition","frame","interocular")]
+        # Stat columns = all numeric, minus bookkeeping
+        exclude = {"participant", "condition", "frame", "interocular"}
+        metric_cols = [c for c in df.columns if c not in exclude and np.issubdtype(df[c].dtype, np.number)]
 
-        # Interocular distance (used for normalization if available)
+        # Optional scale for distance-like metrics only (values and their *_vel/_acc kept as-is)
         io = df["interocular"].to_numpy(float) if "interocular" in df.columns else np.full(len(df), np.nan)
-
-        # --- Scale metrics if appropriate ---
-        scaled = {}
+        scaled: Dict[str, np.ndarray] = {}
         for k in metric_cols:
             arr = df[k].to_numpy(float)
             if scale_by_interocular and is_distance_like_metric(k) and np.isfinite(io).any():
-                # Normalize distance-like metrics by interocular distance
-                # Protect against division by zero or very small values
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    scaled_arr = arr / io
-                    # Replace inf/nan from division with original unscaled values
-                    bad_mask = ~np.isfinite(scaled_arr) | (io < 1e-6)
-                    scaled_arr[bad_mask] = arr[bad_mask]
-                    scaled[k] = scaled_arr
+                    arr2 = arr / io
+                    bad = ~np.isfinite(arr2) | (io < 1e-6)
+                    arr2[bad] = arr[bad]
+                scaled[k] = arr2
             else:
                 scaled[k] = arr
 
-        # --- Compute windowing parameters ---
-        win = window_seconds * fps                        # Window size in frames
-        hop = int(win * (1.0 - window_overlap))           # Step size (with overlap)
-        hop = max(1, hop)                                 # Ensure hop is at least 1
-        n = len(df)                                       # Total number of frames in trial
+        win = window_seconds * fps
+        hop = max(1, int(win * (1.0 - window_overlap)))
+        n = len(df)
 
-        # --- Slide windows across the sequence ---
         for (s, e, widx) in windows_indices(n, win, hop):
-            # Base metadata for this window
             base = {
                 "source": per_frame_dir.name,
                 "participant": pid,
@@ -422,27 +410,26 @@ def compute_linear_from_perframe_dir(per_frame_dir: Path,
                 "t_end_frame": e
             }
 
-            # --- Process each metric within the window ---
             for k, arr in scaled.items():
-                seg = arr[s:e]  # Segment of data for this metric
+                seg = arr[s:e]
 
-                if np.any(~np.isfinite(seg)) or len(seg) < 3:
-                    # Drop if window has NaNs or is too short
+                if np.any(~np.isfinite(seg)) or len(seg) == 0:
                     drops_agg[k] = drops_agg.get(k, 0) + 1
-                    base[f"{k}_mean_abs_vel"] = np.nan
-                    base[f"{k}_mean_abs_acc"] = np.nan
+                    base[f"{k}_min"] = np.nan
+                    base[f"{k}_max"] = np.nan
                     base[f"{k}_rms"] = np.nan
-                else:
-                    # Compute velocity, acceleration, RMS from segment
-                    v, a, r = linear_metrics(seg.astype(float), fps)
-                    base[f"{k}_mean_abs_vel"] = v
-                    base[f"{k}_mean_abs_acc"] = a
-                    base[f"{k}_rms"] = r
+                    if not norm_is_z:
+                        base[f"{k}_mean"] = np.nan
+                    continue
 
-            rows.append(base)  # Store results for this window
+                base[f"{k}_min"] = float(np.min(seg))
+                base[f"{k}_max"] = float(np.max(seg))
+                base[f"{k}_rms"] = float(np.sqrt(np.mean(seg**2)))
+                if not norm_is_z:
+                    base[f"{k}_mean"] = float(np.mean(seg))
 
-    # --- Write results to CSV ---
+            rows.append(base)
+
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(out_csv, index=False)
-
     return drops_agg

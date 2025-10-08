@@ -1,28 +1,52 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+RQA and CRQA Analysis with Multiple Normalization Methods
+
+Computes RQA (Recurrence Quantification Analysis) and CRQA (Cross-RQA) on pose data
+with different alignment and normalization approaches:
+  - Alignments: original, procrustes_global
+  - Normalizations: none (original), minmax, zscore
+
+Output files are named: {session}_{alignment}_{normalization}_rqa_crqa.csv
+"""
+
 import os
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from rqa.utils import rqa_utils_cpp, norm_utils
 
-# ── SETTINGS ───────────────────────────────────────────────────────
-SESSIONS = ["baseline", "experimental"]
-NORMALIZATIONS = ["original", "procrustes_global"]
-ROOT_DIR_PATTERN = "data/processed_data/{session}/features/per_frame/{normalization}"
+# ============================================================================
+# SETTINGS
+# ============================================================================
+
+SESSIONS = ["experimental", "baseline"]
+ALIGNMENTS = ["original"]
+NORMALIZATIONS = ["original", "minmax", "zscore"]  # Add all three normalization types
+
+# Path pattern - uses double underscore between alignment and normalization
+ROOT_DIR_PATTERN = "data/processed_data/{session}/features/per_frame/{alignment}__{normalization}"
+
 OUT_DIR = "data/rqa"
 
 SAMPLE_RATE_HZ = 60
 WIN_SECONDS = 60
 OVERLAP_FRAC = 0.5
 
-# RQA Parameters
+# ============================================================================
+# RQA PARAMETERS
+# ============================================================================
+
 RQA_PARAMS = {
-    "norm": 1,
-    "eDim": 4,
-    "tLag": 20,
-    "rescaleNorm": 1,
-    "radius": 0.15,
-    "tw": 2,
-    "minl": 4,
+    "norm": 1,          # Normalization method for RQA algorithm
+    "eDim": 4,          # Embedding dimension
+    "tLag": 20,         # Time lag
+    "rescaleNorm": 1,   # Rescale normalization
+    "radius": 0.15,     # Recurrence threshold
+    "tw": 2,            # Theiler window
+    "minl": 4,          # Minimum line length
 }
 
 # CRQA Parameters
@@ -35,7 +59,11 @@ CRQA_PARAMS = {
     "minl": 2,
 }
 
-# Define columns for each normalization type
+# ============================================================================
+# COLUMN DEFINITIONS
+# ============================================================================
+
+# Define columns for each alignment type (regardless of normalization)
 RQA_COLUMNS = {
     "original": [
         "interocular",
@@ -85,6 +113,10 @@ METRIC_COLS = [
 ]
 
 
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
 def sliding_windows(total_len, win_len, step):
     """Generate overlapping windows."""
     i = 0
@@ -94,7 +126,16 @@ def sliding_windows(total_len, win_len, step):
 
 
 def compute_rqa(series, p):
-    """Run RQA on a single measurement series."""
+    """
+    Run RQA on a single measurement series.
+    
+    Args:
+        series: 1D numpy array of measurements
+        p: RQA parameter dictionary
+        
+    Returns:
+        tuple: (results_dict, error_code)
+    """
     data_norm = norm_utils.normalize_data(series, p["norm"])
     ds = rqa_utils_cpp.rqa_dist(data_norm, data_norm, dim=p["eDim"], lag=p["tLag"])
     _, rs, _, err = rqa_utils_cpp.rqa_stats(
@@ -109,7 +150,17 @@ def compute_rqa(series, p):
 
 
 def compute_cross_rqa(x, y, p):
-    """Run cross-RQA between two measurement series."""
+    """
+    Run cross-RQA between two measurement series.
+    
+    Args:
+        x: First time series
+        y: Second time series
+        p: CRQA parameter dictionary
+        
+    Returns:
+        tuple: (results_dict, error_code)
+    """
     try:
         x_n = norm_utils.normalize_data(x, p["norm"])
         y_n = norm_utils.normalize_data(y, p["norm"])
@@ -128,13 +179,47 @@ def compute_cross_rqa(x, y, p):
         return None, -1
 
 
-def process_session_normalization(session, normalization):
-    """Process RQA and CRQA for one session/normalization combination."""
+def load_normalized_data(file_path, normalization_method):
+    """
+    Load data from CSV file.
+    
+    Since your data is already normalized in separate directories with the
+    naming convention {alignment}__{normalization}, we just load it directly.
+    
+    Args:
+        file_path: Path to CSV file
+        normalization_method: 'original', 'minmax', or 'zscore' (for metadata only)
+        
+    Returns:
+        DataFrame (already normalized based on which directory it came from)
+    """
+    df = pd.read_csv(file_path)
+    return df
+
+
+# ============================================================================
+# MAIN PROCESSING
+# ============================================================================
+
+def process_combination(session, alignment, normalization):
+    """
+    Process RQA and CRQA for one session/alignment/normalization combination.
+    
+    Args:
+        session: 'baseline' or 'experimental'
+        alignment: 'original' or 'procrustes_global'
+        normalization: 'original', 'minmax', or 'zscore'
+    """
     print(f"\n{'='*70}")
-    print(f"Processing: {session} / {normalization}")
+    print(f"Processing: {session} / {alignment}__{normalization}")
     print(f"{'='*70}")
     
-    root_dir = ROOT_DIR_PATTERN.format(session=session, normalization=normalization)
+    # Build directory path with double underscore
+    root_dir = ROOT_DIR_PATTERN.format(
+        session=session, 
+        alignment=alignment, 
+        normalization=normalization
+    )
     
     if not os.path.exists(root_dir):
         print(f"⚠️  Directory not found: {root_dir}, skipping.")
@@ -150,9 +235,9 @@ def process_session_normalization(session, normalization):
         print(f"⚠️  No CSV files found in {root_dir}")
         return
     
-    # Get RQA columns and CRQA pairs for this normalization
-    rqa_cols = RQA_COLUMNS[normalization]
-    crqa_pairs = CRQA_PAIRS[normalization]
+    # Get RQA columns and CRQA pairs for this alignment
+    rqa_cols = RQA_COLUMNS[alignment]
+    crqa_pairs = CRQA_PAIRS[alignment]
     
     for csv_file in tqdm(csv_files, desc="Files"):
         # Parse filename: {participant}_{condition}_perframe.csv
@@ -165,7 +250,11 @@ def process_session_normalization(session, normalization):
             tqdm.write(f"⚠️  Cannot parse filename: {csv_file}, skipping.")
             continue
         
-        df = pd.read_csv(os.path.join(root_dir, csv_file))
+        # Load data with normalization applied
+        df = load_normalized_data(
+            os.path.join(root_dir, csv_file), 
+            normalization
+        )
         
         # ── RQA Analysis ──
         cols_present = [c for c in rqa_cols if c in df.columns]
@@ -191,6 +280,8 @@ def process_session_normalization(session, normalization):
                     row = {
                         "participant": str(pid),
                         "condition": cond,
+                        "alignment": alignment,
+                        "normalization": normalization,
                         "column": col,
                         "window_index": w_idx,
                         "window_start": s,
@@ -225,6 +316,8 @@ def process_session_normalization(session, normalization):
                 row = {
                     "participant": str(pid),
                     "condition": cond,
+                    "alignment": alignment,
+                    "normalization": normalization,
                     "column": label,
                     "window_index": w_idx,
                     "window_start": s,
@@ -235,29 +328,61 @@ def process_session_normalization(session, normalization):
     
     # ── SAVE RESULTS ──
     if not results:
-        print(f"😐  No results generated for {session}/{normalization}.")
+        print(f"😐  No results generated for {session}/{alignment}/{normalization}.")
         return
     
     os.makedirs(OUT_DIR, exist_ok=True)
-    out_csv = os.path.join(OUT_DIR, f"{session}_{normalization}_rqa_crqa.csv")
+    
+    # Output filename includes all three identifiers with double underscore format
+    out_csv = os.path.join(
+        OUT_DIR, 
+        f"{session}_{alignment}__{normalization}_rqa_crqa.csv"
+    )
+    
     df_results = pd.DataFrame(results)
     df_results.to_csv(out_csv, index=False)
     print(f"✅  Results written to {out_csv} ({len(df_results)} rows)")
 
 
 def main():
-    """Process all session/normalization combinations."""
-    print("Starting batch RQA and CRQA analysis...")
+    """Process all session/alignment/normalization combinations."""
+    print("="*70)
+    print("STARTING BATCH RQA AND CRQA ANALYSIS")
+    print("="*70)
     print(f"Sessions: {SESSIONS}")
+    print(f"Alignments: {ALIGNMENTS}")
     print(f"Normalizations: {NORMALIZATIONS}")
+    print(f"Total combinations: {len(SESSIONS) * len(ALIGNMENTS) * len(NORMALIZATIONS)}")
+    
+    # Track completion
+    completed = []
+    failed = []
     
     for session in SESSIONS:
-        for normalization in NORMALIZATIONS:
-            process_session_normalization(session, normalization)
+        for alignment in ALIGNMENTS:
+            for normalization in NORMALIZATIONS:
+                try:
+                    process_combination(session, alignment, normalization)
+                    completed.append(f"{session}_{alignment}_{normalization}")
+                except Exception as e:
+                    error_msg = f"{session}_{alignment}_{normalization}"
+                    failed.append(error_msg)
+                    print(f"❌ Error processing {error_msg}: {e}")
+                    import traceback
+                    traceback.print_exc()
     
+    # Summary
     print(f"\n{'='*70}")
-    print("All processing complete!")
+    print("PROCESSING COMPLETE")
     print(f"{'='*70}")
+    print(f"✅ Successful: {len(completed)}/{len(SESSIONS)*len(ALIGNMENTS)*len(NORMALIZATIONS)}")
+    if failed:
+        print(f"❌ Failed: {len(failed)}")
+        for f in failed:
+            print(f"   - {f}")
+    
+    print(f"\nOutput directory: {OUT_DIR}")
+    print(f"Output files: {session}_{alignment}_{normalization}_rqa_crqa.csv")
 
 
 if __name__ == "__main__":

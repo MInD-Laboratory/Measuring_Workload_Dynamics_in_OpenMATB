@@ -512,6 +512,7 @@ def step_6_build_templates(normalized_data: Dict[str, pd.DataFrame],
 # ================================================================================================
 # STEP 7: EXTRACT FEATURES (PROCRUSTES + ORIGINAL)
 # ================================================================================================
+# Replace your current step_7_extract_features function with this simpler version:
 
 def step_7_extract_features(normalized_data: Dict[str, pd.DataFrame],
                            metadata: Dict[str, Dict],
@@ -540,6 +541,47 @@ def step_7_extract_features(normalized_data: Dict[str, pd.DataFrame],
     feat_dir = Path(CFG.OUT_BASE) / "features"
     feat_dir.mkdir(parents=True, exist_ok=True)
 
+    # Normalization variants
+    NORM_VARIANTS = ["none", "zscore", "minmax"]
+    
+    # Helper function for normalization
+    def _apply_norm_df(df: pd.DataFrame, method: str) -> pd.DataFrame:
+        """Column-wise normalization for per-frame feature DataFrames."""
+        if method == "none":
+            return df
+        
+        out = df.copy()
+        num_cols = out.select_dtypes(include=[np.number]).columns
+        
+        if method == "zscore":
+            mu = out[num_cols].mean(axis=0)
+            sigma = out[num_cols].std(axis=0, ddof=0)
+            sigma = sigma.replace(0, np.nan)
+            out[num_cols] = (out[num_cols] - mu) / sigma
+            return out
+        
+        if method == "minmax":
+            mn = out[num_cols].min(axis=0)
+            mx = out[num_cols].max(axis=0)
+            rng = (mx - mn).replace(0, np.nan)
+            out[num_cols] = (out[num_cols] - mn) / rng
+            return out
+        
+        raise ValueError(f"Unknown normalization method: {method}")
+    
+    # Helper to add derivatives
+    def add_perframe_derivatives(df: pd.DataFrame) -> pd.DataFrame:
+        """Append *_vel and *_acc columns via np.gradient."""
+        out = df.copy()
+        num_cols = out.select_dtypes(include=[np.number]).columns
+        for col in num_cols:
+            s = out[col].to_numpy()
+            v = np.gradient(s)
+            a = np.gradient(v)
+            out[f"{col}_vel"] = v
+            out[f"{col}_acc"] = a
+        return out
+
     # Row buffers for aggregated window features
     procrustes_global_rows = []
     procrustes_part_rows = []
@@ -555,25 +597,35 @@ def step_7_extract_features(normalized_data: Dict[str, pd.DataFrame],
         pid = metadata[filename]["participant"]
         cond = metadata[filename]["condition"]
         df_norm = normalized_data[filename]
+        io = interocular_series(df_norm, metadata[filename].get("conf_prefix")).values
+        n_frames = len(io)
 
         # A) Procrustes features vs global template
         if RUN_FEATURES_PROCRUSTES_GLOBAL and global_template is not None:
             try:
-                feats = procrustes_features_for_file(df_norm, global_template, rel_idxs)
-                io = interocular_series(df_norm, metadata[filename].get("conf_prefix")).values
-                n_frames = len(io)
-
-                if SAVE_PER_FRAME_PROCRUSTES_GLOBAL:
-                    write_per_frame_metrics(feat_dir, "procrustes_global", pid, cond, feats, io, n_frames)
-
-                dfw, drops = window_features(feats, io, CFG.FPS, win, hop)
-                dfw.insert(0, "condition", cond)
-                dfw.insert(0, "participant", pid)
-                dfw.insert(0, "source", "procrustes_global")
-                procrustes_global_rows.append(dfw)
-
-                for k, v in drops.items():
-                    procrustes_global_drops_agg[k] = procrustes_global_drops_agg.get(k, 0) + v
+                feats_dict = procrustes_features_for_file(df_norm, global_template, rel_idxs)
+                feats_df = pd.DataFrame(feats_dict)
+                
+                # Process each normalization variant
+                for norm in NORM_VARIANTS:
+                    feats_norm = _apply_norm_df(feats_df, norm)
+                    feats_aug = add_perframe_derivatives(feats_norm)
+                    
+                    if SAVE_PER_FRAME_PROCRUSTES_GLOBAL:
+                        subdir = f"procrustes_global__{norm}" if norm != "none" else "procrustes_global"
+                        write_per_frame_metrics(feat_dir, subdir, pid, cond, feats_aug, io, n_frames)
+                    
+                    # Window features
+                    feats_dict_for_window = {col: feats_norm[col].values for col in feats_norm.columns}
+                    dfw, drops = window_features(feats_dict_for_window, io, CFG.FPS, win, hop)
+                    dfw.insert(0, "norm", norm)
+                    dfw.insert(0, "condition", cond)
+                    dfw.insert(0, "participant", pid)
+                    dfw.insert(0, "source", "procrustes_global")
+                    procrustes_global_rows.append(dfw)
+                    
+                    for k, v in drops.items():
+                        procrustes_global_drops_agg[k] = procrustes_global_drops_agg.get(k, 0) + v
 
             except Exception as e:
                 print(f"Error processing {filename} (global): {e}")
@@ -582,21 +634,29 @@ def step_7_extract_features(normalized_data: Dict[str, pd.DataFrame],
         if RUN_FEATURES_PROCRUSTES_PARTICIPANT and pid in participant_templates:
             try:
                 template = participant_templates[pid]
-                feats = procrustes_features_for_file(df_norm, template, rel_idxs)
-                io = interocular_series(df_norm, metadata[filename].get("conf_prefix")).values
-                n_frames = len(io)
-
-                if SAVE_PER_FRAME_PROCRUSTES_PARTICIPANT:
-                    write_per_frame_metrics(feat_dir, "procrustes_participant", pid, cond, feats, io, n_frames)
-
-                dfw, drops = window_features(feats, io, CFG.FPS, win, hop)
-                dfw.insert(0, "condition", cond)
-                dfw.insert(0, "participant", pid)
-                dfw.insert(0, "source", "procrustes_participant")
-                procrustes_part_rows.append(dfw)
-
-                for k, v in drops.items():
-                    procrustes_part_drops_agg[k] = procrustes_part_drops_agg.get(k, 0) + v
+                feats_dict = procrustes_features_for_file(df_norm, template, rel_idxs)
+                feats_df = pd.DataFrame(feats_dict)
+                
+                # Process each normalization variant
+                for norm in NORM_VARIANTS:
+                    feats_norm = _apply_norm_df(feats_df, norm)
+                    feats_aug = add_perframe_derivatives(feats_norm)
+                    
+                    if SAVE_PER_FRAME_PROCRUSTES_PARTICIPANT:
+                        subdir = f"procrustes_participant__{norm}" if norm != "none" else "procrustes_participant"
+                        write_per_frame_metrics(feat_dir, subdir, pid, cond, feats_aug, io, n_frames)
+                    
+                    # Window features
+                    feats_dict_for_window = {col: feats_norm[col].values for col in feats_norm.columns}
+                    dfw, drops = window_features(feats_dict_for_window, io, CFG.FPS, win, hop)
+                    dfw.insert(0, "norm", norm)
+                    dfw.insert(0, "condition", cond)
+                    dfw.insert(0, "participant", pid)
+                    dfw.insert(0, "source", "procrustes_participant")
+                    procrustes_part_rows.append(dfw)
+                    
+                    for k, v in drops.items():
+                        procrustes_part_drops_agg[k] = procrustes_part_drops_agg.get(k, 0) + v
 
             except Exception as e:
                 print(f"Error processing {filename} (participant): {e}")
@@ -604,21 +664,29 @@ def step_7_extract_features(normalized_data: Dict[str, pd.DataFrame],
         # C) Original features (no Procrustes)
         if RUN_FEATURES_ORIGINAL:
             try:
-                feats = original_features_for_file(df_norm)
-                io = interocular_series(df_norm, metadata[filename].get("conf_prefix")).values
-                n_frames = len(io)
-
-                if SAVE_PER_FRAME_ORIGINAL:
-                    write_per_frame_metrics(feat_dir, "original", pid, cond, feats, io, n_frames)
-
-                dfw, drops = window_features(feats, io, CFG.FPS, win, hop)
-                dfw.insert(0, "condition", cond)
-                dfw.insert(0, "participant", pid)
-                dfw.insert(0, "source", "original")
-                original_rows.append(dfw)
-
-                for k, v in drops.items():
-                    original_drops_agg[k] = original_drops_agg.get(k, 0) + v
+                feats_dict = original_features_for_file(df_norm)
+                feats_df = pd.DataFrame(feats_dict)
+                
+                # Process each normalization variant
+                for norm in NORM_VARIANTS:
+                    feats_norm = _apply_norm_df(feats_df, norm)
+                    feats_aug = add_perframe_derivatives(feats_norm)
+                    
+                    if SAVE_PER_FRAME_ORIGINAL:
+                        subdir = f"original__{norm}" if norm != "none" else "original"
+                        write_per_frame_metrics(feat_dir, subdir, pid, cond, feats_aug, io, n_frames)
+                    
+                    # Window features
+                    feats_dict_for_window = {col: feats_norm[col].values for col in feats_norm.columns}
+                    dfw, drops = window_features(feats_dict_for_window, io, CFG.FPS, win, hop)
+                    dfw.insert(0, "norm", norm)
+                    dfw.insert(0, "condition", cond)
+                    dfw.insert(0, "participant", pid)
+                    dfw.insert(0, "source", "original")
+                    original_rows.append(dfw)
+                    
+                    for k, v in drops.items():
+                        original_drops_agg[k] = original_drops_agg.get(k, 0) + v
 
             except Exception as e:
                 print(f"Error processing {filename} (original): {e}")
@@ -645,12 +713,10 @@ def step_7_extract_features(normalized_data: Dict[str, pd.DataFrame],
     print("\nStep 7 Complete: Feature extraction finished")
 
 
-# ================================================================================================
-# STEP 8: COMPUTE LINEAR METRICS
-# ================================================================================================
+# And update step_8_compute_linear_metrics to process all normalization variants:
 
 def step_8_compute_linear_metrics() -> None:
-    """Step 8: Compute linear metrics (velocity, acceleration, RMS) from per-frame data."""
+    """Step 8: Compute windowed min/max/mean/RMS from per-frame data (value, *_vel, *_acc)."""
 
     print("\n" + "="*80)
     print("STEP 8: COMPUTE LINEAR METRICS")
@@ -664,18 +730,26 @@ def step_8_compute_linear_metrics() -> None:
     lm_dir = Path(CFG.OUT_BASE) / "linear_metrics"
     lm_dir.mkdir(parents=True, exist_ok=True)
 
-    # Process each feature type
-    feature_types = []
+    base_types = []
     if RUN_FEATURES_PROCRUSTES_GLOBAL:
-        feature_types.append("procrustes_global")
+        base_types.append("procrustes_global")
     if RUN_FEATURES_PROCRUSTES_PARTICIPANT:
-        feature_types.append("procrustes_participant")
+        base_types.append("procrustes_participant")
     if RUN_FEATURES_ORIGINAL:
-        feature_types.append("original")
+        base_types.append("original")
+
+    # Expand to include __zscore / __minmax siblings (none stays unsuffixed)
+    NORM_VARIANTS = ["none", "zscore", "minmax"]
+    feature_types = []
+    for bt in base_types:
+        for norm in NORM_VARIANTS:
+            if norm == "none":
+                feature_types.append(bt)  # base name for "none"
+            else:
+                feature_types.append(f"{bt}__{norm}")
 
     for feature_type in feature_types:
         print(f"\n8) Computing linear metrics for {feature_type}...")
-
         try:
             per_frame_dir = feat_dir / "per_frame" / feature_type
             if per_frame_dir.exists() and any(per_frame_dir.glob("*.csv")):
@@ -687,7 +761,6 @@ def step_8_compute_linear_metrics() -> None:
                 print(f"Linear metrics computed for {feature_type}: {out_path}")
             else:
                 print(f"Per-frame directory not found or empty: {per_frame_dir}")
-
         except Exception as e:
             print(f"Error computing linear metrics for {feature_type}: {e}")
 
