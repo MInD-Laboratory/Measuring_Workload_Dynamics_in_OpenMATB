@@ -89,3 +89,5 @@ dmypy.json
 
 # macOS
 .DS_Store
+
+data/

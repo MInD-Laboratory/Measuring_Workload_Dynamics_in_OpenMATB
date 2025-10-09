@@ -73,130 +73,241 @@ def _robust_ci_cols(ci_pd: pd.DataFrame) -> Tuple[str|None, str|None]:
     upper = next((c for c in cand if "ucl" in c.lower()), None)
     return lower, upper
 
-def run_rpy2_lmer(df: pd.DataFrame, dv: str, adjust: str = "none") -> Tuple[Dict[Tuple[str,str], float], Dict[Tuple[str,str], float], Dict[str,float], Dict[str,Tuple[float,float]]]:
+
+def run_rpy2_lmer(df: pd.DataFrame, dv: str, adjust: str = "tukey"):
     """
-    Fit: dv ~ condition + window_index + (1 | participant)
+    Fit: dv ~ condition + widx_c + (1 + widx_c || participant)
     Returns:
       pairs_est (lo,hi): estimate (hi - lo)
       pairs_p   (lo,hi): p-value
       means: emmeans per condition
-      cis: (lower, upper) per condition (approx if confint fails)
+      cis: (lower, upper) per condition (95%)
     """
-    if not _HAVE_RPY2:
-        raise ImportError("rpy2 not available. Install rpy2 and R packages lmerTest/emmeans.")
+    # ---- prep pandas data ----
+    need = ["participant", "condition", "window_index", dv]
+    d = df[need].dropna().copy()
+    d = d.rename(columns={dv: "dv"})
+    d["condition"] = pd.Categorical(
+        d["condition"].astype(str).str.strip().str.upper(),
+        categories=["L","M","H"], ordered=True
+    )
+    # center/scale index
+    w = pd.to_numeric(d["window_index"], errors="coerce")
+    w = (w - np.nanmean(w)) / (np.nanstd(w) if np.nanstd(w) != 0 else 1.0)
+    d["widx_c"] = w.fillna(0.0)
 
-    # local imports
+    # ---- R packages / data bridge ----
     from rpy2.robjects.packages import importr
-    import rpy2.robjects as robjects
+    import rpy2.robjects as ro
     from rpy2.robjects.conversion import localconverter
     from rpy2.robjects import pandas2ri
-    robjects.r('emmeans::emm_options(lmer.df = "satterthwaite", lmerTest.limit = 4000)')
+    lme4     = importr("lme4")
+    lmerTest = importr("lmerTest")
+    emmeans  = importr("emmeans")
 
-    # Prepare dataframe: ensure needed cols exist, set defaults if missing
-    d = df.copy()
-    if "participant_id" in d.columns and "participant" not in d.columns:
-        d = d.rename(columns={"participant_id":"participant"})
-    if "participant" not in d.columns:
-        raise ValueError("Data must contain 'participant' column")
-    # ensure window_index exists
-    if "window_index" not in d.columns:
-        d["window_index"] = 0
-    # condition
-    if "condition" not in d.columns:
-        raise ValueError("Data must contain 'condition' column")
-    # keep only necessary cols
-    cols = ["participant","condition","window_index", dv]
-    dat = d[cols].dropna().copy()
-    dat = dat.rename(columns={dv: "dv"})
-    dat["participant"] = dat["participant"].astype(str)
-    dat["condition"] = pd.Categorical(dat["condition"].astype(str).str.strip().str.upper(), categories=COND_ORDER, ordered=True)
+    with localconverter(ro.default_converter + pandas2ri.converter):
+        ro.globalenv["dat"] = ro.conversion.py2rpy(d)
 
-    # center/scale window_index
-    w = pd.to_numeric(dat["window_index"], errors="coerce")
-    if w.isna().all():
-        dat["widx_c"] = 0.0
-    else:
-        dat["widx_c"] = (w - np.nanmean(w)) / (np.nanstd(w) if np.nanstd(w) != 0 else 1.0)
+    ro.r('emmeans::emm_options(lmer.df = "satterthwaite", lmerTest.limit = 4000)')
+    ro.r('dat$participant <- factor(dat$participant)')
+    ro.r('dat$condition   <- factor(dat$condition, levels=c("L","M","H"), ordered=TRUE)')
+    ro.r('dat$widx_c      <- as.numeric(dat$widx_c)')
 
-    # push to R using localconverter
-    with localconverter(robjects.default_converter + pandas2ri.converter):
-        robjects.globalenv["dat"] = robjects.conversion.py2rpy(dat)
+    # robust control + random slope (uncorrelated) for stability
+    
+    ro.r('ctrl <- lme4::lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e6))')
+    ro.r('fit  <- lmerTest::lmer(dv ~ condition + widx_c + (1 + widx_c || participant), data=dat, control=ctrl)')
+    ro.r('emm  <- emmeans::emmeans(fit, ~ condition)')
 
-    # load packages and fit
-    robjects.r('suppressPackageStartupMessages(library(lme4))')
-    robjects.r('suppressPackageStartupMessages(library(lmerTest))')
-    robjects.r('suppressPackageStartupMessages(library(emmeans))')
-    # robust control
-    robjects.r('ctrl <- lme4::lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=200000))')
-
-    # formula uses window_index (we already created widx_c but emmeans on condition unaffected)
-    rcode = """
-        dat$participant <- factor(dat$participant)
-        dat$condition <- factor(dat$condition, levels = c("L","M","H"), ordered = TRUE)
-        dat$window_index <- as.numeric(dat$window_index)
-        fit <- lmerTest::lmer(dv ~ condition + window_index + (1 | participant), data = dat, control = ctrl)
-        emm <- emmeans::emmeans(fit, specs = ~ condition)
-    """
-    robjects.r(rcode)
-
-    # pull emmeans, confint, pairs
-    emm_df_r = robjects.r("as.data.frame(emm)")
+    # pull emmeans, CIs, and pairwise
+    emm_df_r = ro.r("as.data.frame(emm)")
+    # try confint; fallback to SE
     try:
-        ci_df_r = robjects.r("as.data.frame(confint(emm, level = 0.95))")
+        ci_df_r = ro.r("as.data.frame(confint(emm, level=0.95))")
     except Exception:
         ci_df_r = None
-    pwc_df_r = robjects.r(f"as.data.frame(pairs(emm, adjust = '{adjust}'))")
+    pwc_df_r = ro.r(f'as.data.frame(pairs(emm, adjust = "{adjust}"))')
 
-    with localconverter(robjects.default_converter + pandas2ri.converter):
-        emm_pd = robjects.conversion.rpy2py(emm_df_r)
-        pwc_pd = robjects.conversion.rpy2py(pwc_df_r)
-        ci_pd = robjects.conversion.rpy2py(ci_df_r) if ci_df_r is not None else pd.DataFrame()
+    with localconverter(ro.default_converter + pandas2ri.converter):
+        emm_pd = ro.conversion.rpy2py(emm_df_r)
+        pwc_pd = ro.conversion.rpy2py(pwc_df_r)
+        ci_pd  = ro.conversion.rpy2py(ci_df_r) if ci_df_r is not None else pd.DataFrame()
 
     # means
     means = {str(r["condition"]): float(r["emmean"]) for _, r in emm_pd.iterrows()}
 
-    # cis: robust detection
+    # CIs
+    def _robust_ci_cols(ci_pd: pd.DataFrame):
+        cand = list(ci_pd.columns)
+        lower = next((c for c in cand if c.lower().startswith("lower")), None)
+        upper = next((c for c in cand if c.lower().startswith("upper")), None)
+        if not (lower and upper):
+            lower = next((c for c in cand if "lcl" in c.lower()), None)
+            upper = next((c for c in cand if "ucl" in c.lower()), None)
+        return lower, upper
+
     cis = {}
     if not ci_pd.empty and "condition" in ci_pd.columns:
         lower_col, upper_col = _robust_ci_cols(ci_pd)
         if lower_col and upper_col:
             for _, r in ci_pd.iterrows():
                 cis[str(r["condition"])] = (float(r[lower_col]), float(r[upper_col]))
-    else:
-        # fallback using SE from emm_pd
+    if not cis:
         se_col = next((c for c in emm_pd.columns if c.lower() in ("se","stderr","std.error")), None)
         if se_col:
             for _, r in emm_pd.iterrows():
-                cond = str(r["condition"])
-                mean = float(r["emmean"]); se = float(r[se_col])
-                cis[cond] = (mean - 1.96*se, mean + 1.96*se)
+                m = float(r["emmean"]); se = float(r[se_col])
+                cis[str(r["condition"])] = (m - 1.96*se, m + 1.96*se)
         else:
-            for cond in means.keys():
-                cis[cond] = (float("nan"), float("nan"))
+            for k in means: cis[k] = (float("nan"), float("nan"))
 
-    # pairwise p and estimates
+    # pairwise estimates and p-values, normalized to (lo,hi) order
     pcol = "p.value" if "p.value" in pwc_pd.columns else next((c for c in pwc_pd.columns if c.lower().startswith("p")), None)
-    pairs_est: Dict[Tuple[str,str], float] = {}
-    pairs_p: Dict[Tuple[str,str], float] = {}
-    order = {k: i for i,k in enumerate(COND_ORDER)}
+    pairs_est, pairs_p = {}, {}
+    order = {"L":0, "M":1, "H":2}
     for _, r in pwc_pd.iterrows():
-        contrast = str(r.get("contrast", ""))
-        contrast = contrast.replace("–","-").replace(" - ","-")
+        contrast = str(r.get("contrast","")).replace("–","-").replace(" - ","-")
         parts = [p.strip() for p in contrast.split("-")]
-        if len(parts) != 2:
+        if len(parts) != 2: 
             continue
-        left = next((lvl for lvl in COND_ORDER if lvl in parts[0]), None)
-        right = next((lvl for lvl in COND_ORDER if lvl in parts[1]), None)
-        if left is None or right is None or left == right:
+        a, b = parts[0], parts[1]
+        if a not in order or b not in order or a == b:
             continue
-        est_lr = float(r["estimate"]) if "estimate" in r and pd.notnull(r["estimate"]) else np.nan
-        pv = float(r[pcol]) if (pcol and pd.notnull(r[pcol])) else np.nan
-        lo, hi = (left, right) if order[left] < order[right] else (right, left)
-        est_hi_minus_lo = est_lr if (left == hi and right == lo) else -est_lr
-        pairs_est[(lo,hi)] = est_hi_minus_lo
-        pairs_p[(lo,hi)] = pv
+        est_lr = float(r["estimate"]) if "estimate" in r and pd.notnull(r["estimate"]) else float("nan")
+        pv     = float(r[pcol]) if (pcol and pd.notnull(r[pcol])) else float("nan")
+        lo, hi = (a, b) if order[a] < order[b] else (b, a)
+        est_hi_minus_lo = est_lr if (a == hi and b == lo) else -est_lr
+        pairs_est[(lo, hi)] = est_hi_minus_lo
+        pairs_p[(lo,  hi)]  = pv
 
     return pairs_est, pairs_p, means, cis
+
+
+
+# def run_rpy2_lmer(df: pd.DataFrame, dv: str, adjust: str = "none") -> Tuple[Dict[Tuple[str,str], float], Dict[Tuple[str,str], float], Dict[str,float], Dict[str,Tuple[float,float]]]:
+#     """
+#     Fit: dv ~ condition + window_index + (1 | participant)
+#     Returns:
+#       pairs_est (lo,hi): estimate (hi - lo)
+#       pairs_p   (lo,hi): p-value
+#       means: emmeans per condition
+#       cis: (lower, upper) per condition (approx if confint fails)
+#     """
+#     if not _HAVE_RPY2:
+#         raise ImportError("rpy2 not available. Install rpy2 and R packages lmerTest/emmeans.")
+
+#     # local imports
+#     from rpy2.robjects.packages import importr
+#     import rpy2.robjects as robjects
+#     from rpy2.robjects.conversion import localconverter
+#     from rpy2.robjects import pandas2ri
+#     robjects.r('emmeans::emm_options(lmer.df = "satterthwaite", lmerTest.limit = 4000)')
+
+#     # Prepare dataframe: ensure needed cols exist, set defaults if missing
+#     d = df.copy()
+#     if "participant_id" in d.columns and "participant" not in d.columns:
+#         d = d.rename(columns={"participant_id":"participant"})
+#     if "participant" not in d.columns:
+#         raise ValueError("Data must contain 'participant' column")
+#     # ensure window_index exists
+#     if "window_index" not in d.columns:
+#         d["window_index"] = 0
+#     # condition
+#     if "condition" not in d.columns:
+#         raise ValueError("Data must contain 'condition' column")
+#     # keep only necessary cols
+#     cols = ["participant","condition","window_index", dv]
+#     dat = d[cols].dropna().copy()
+#     dat = dat.rename(columns={dv: "dv"})
+#     dat["participant"] = dat["participant"].astype(str)
+#     dat["condition"] = pd.Categorical(dat["condition"].astype(str).str.strip().str.upper(), categories=COND_ORDER, ordered=True)
+
+#     # center/scale window_index
+#     w = pd.to_numeric(dat["window_index"], errors="coerce")
+#     if w.isna().all():
+#         dat["widx_c"] = 0.0
+#     else:
+#         dat["widx_c"] = (w - np.nanmean(w)) / (np.nanstd(w) if np.nanstd(w) != 0 else 1.0)
+
+#     # push to R using localconverter
+#     with localconverter(robjects.default_converter + pandas2ri.converter):
+#         robjects.globalenv["dat"] = robjects.conversion.py2rpy(dat)
+
+#     # load packages and fit
+#     robjects.r('suppressPackageStartupMessages(library(lme4))')
+#     robjects.r('suppressPackageStartupMessages(library(lmerTest))')
+#     robjects.r('suppressPackageStartupMessages(library(emmeans))')
+#     # robust control
+#     robjects.r('ctrl <- lme4::lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=200000))')
+
+#     # formula uses window_index (we already created widx_c but emmeans on condition unaffected)
+#     rcode = """
+#         dat$participant <- factor(dat$participant)
+#         dat$condition <- factor(dat$condition, levels = c("L","M","H"), ordered = TRUE)
+#         dat$window_index <- as.numeric(dat$window_index)
+#         fit <- lmerTest::lmer(dv ~ condition + window_index + (1 | participant), data = dat, control = ctrl)
+#         emm <- emmeans::emmeans(fit, specs = ~ condition)
+#     """
+#     robjects.r(rcode)
+
+#     # pull emmeans, confint, pairs
+#     emm_df_r = robjects.r("as.data.frame(emm)")
+#     try:
+#         ci_df_r = robjects.r("as.data.frame(confint(emm, level = 0.95))")
+#     except Exception:
+#         ci_df_r = None
+#     pwc_df_r = robjects.r(f"as.data.frame(pairs(emm, adjust = '{adjust}'))")
+
+#     with localconverter(robjects.default_converter + pandas2ri.converter):
+#         emm_pd = robjects.conversion.rpy2py(emm_df_r)
+#         pwc_pd = robjects.conversion.rpy2py(pwc_df_r)
+#         ci_pd = robjects.conversion.rpy2py(ci_df_r) if ci_df_r is not None else pd.DataFrame()
+
+#     # means
+#     means = {str(r["condition"]): float(r["emmean"]) for _, r in emm_pd.iterrows()}
+
+#     # cis: robust detection
+#     cis = {}
+#     if not ci_pd.empty and "condition" in ci_pd.columns:
+#         lower_col, upper_col = _robust_ci_cols(ci_pd)
+#         if lower_col and upper_col:
+#             for _, r in ci_pd.iterrows():
+#                 cis[str(r["condition"])] = (float(r[lower_col]), float(r[upper_col]))
+#     else:
+#         # fallback using SE from emm_pd
+#         se_col = next((c for c in emm_pd.columns if c.lower() in ("se","stderr","std.error")), None)
+#         if se_col:
+#             for _, r in emm_pd.iterrows():
+#                 cond = str(r["condition"])
+#                 mean = float(r["emmean"]); se = float(r[se_col])
+#                 cis[cond] = (mean - 1.96*se, mean + 1.96*se)
+#         else:
+#             for cond in means.keys():
+#                 cis[cond] = (float("nan"), float("nan"))
+
+#     # pairwise p and estimates
+#     pcol = "p.value" if "p.value" in pwc_pd.columns else next((c for c in pwc_pd.columns if c.lower().startswith("p")), None)
+#     pairs_est: Dict[Tuple[str,str], float] = {}
+#     pairs_p: Dict[Tuple[str,str], float] = {}
+#     order = {k: i for i,k in enumerate(COND_ORDER)}
+#     for _, r in pwc_pd.iterrows():
+#         contrast = str(r.get("contrast", ""))
+#         contrast = contrast.replace("–","-").replace(" - ","-")
+#         parts = [p.strip() for p in contrast.split("-")]
+#         if len(parts) != 2:
+#             continue
+#         left = next((lvl for lvl in COND_ORDER if lvl in parts[0]), None)
+#         right = next((lvl for lvl in COND_ORDER if lvl in parts[1]), None)
+#         if left is None or right is None or left == right:
+#             continue
+#         est_lr = float(r["estimate"]) if "estimate" in r and pd.notnull(r["estimate"]) else np.nan
+#         pv = float(r[pcol]) if (pcol and pd.notnull(r[pcol])) else np.nan
+#         lo, hi = (left, right) if order[left] < order[right] else (right, left)
+#         est_hi_minus_lo = est_lr if (left == hi and right == lo) else -est_lr
+#         pairs_est[(lo,hi)] = est_hi_minus_lo
+#         pairs_p[(lo,hi)] = pv
+
+#     return pairs_est, pairs_p, means, cis
 
 # --------------------------
 # plotting helper
@@ -208,9 +319,12 @@ def barplot_ax(ax, means: List[float], sems: List[float], pvals: List[float],
                ylim_padding: Tuple[float,float] = (0.4, 0.1)):
     if colors is None:
         colors = ['#4575b4', '#ffffbf', '#d73027']
+
     import numpy as _np
     x = _np.arange(len(means))
-    ax.bar(x, means, yerr=sems, capsize=4, color=colors, width=bar_width, edgecolor="black", edgewidth=4)
+
+    ax.bar(x, means, yerr=sems, capsize=4, color=colors, width=bar_width, edgecolor="black", linewidth=4)
+    
     lowers = [m - (s if not _np.isnan(s) else 0) for m,s in zip(means,sems)]
     uppers = [m + (s if not _np.isnan(s) else 0) for m,s in zip(means,sems)]
     y_min = min(lowers); y_max = max(uppers)

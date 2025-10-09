@@ -23,11 +23,11 @@ from rqa.utils import rqa_utils_cpp, norm_utils
 # ============================================================================
 
 SESSIONS = ["experimental", "baseline"]
-ALIGNMENTS = ["original"]
-NORMALIZATIONS = ["original", "minmax", "zscore"]  # Add all three normalization types
+ALIGNMENTS = ["original", "procrustes_global"]
+#NORMALIZATIONS = ["zscore", "original", "minmax"]  # Add all three normalization types
 
 # Path pattern - uses double underscore between alignment and normalization
-ROOT_DIR_PATTERN = "data/processed_data/{session}/features/per_frame/{alignment}__{normalization}"
+ROOT_DIR_PATTERN = "data/processed_data/{session}/features/per_frame/{alignment}" #__{normalization}
 
 OUT_DIR = "data/rqa"
 
@@ -44,7 +44,7 @@ RQA_PARAMS = {
     "eDim": 4,          # Embedding dimension
     "tLag": 20,         # Time lag
     "rescaleNorm": 1,   # Rescale normalization
-    "radius": 0.15,     # Recurrence threshold
+    "radius": 0.2,     # Recurrence threshold
     "tw": 2,            # Theiler window
     "minl": 4,          # Minimum line length
 }
@@ -280,12 +280,12 @@ def process_combination(session, alignment, normalization):
                     row = {
                         "participant": str(pid),
                         "condition": cond,
-                        "alignment": alignment,
-                        "normalization": normalization,
+                        #"alignment": alignment,
+                        #"normalization": normalization,
                         "column": col,
                         "window_index": w_idx,
-                        "window_start": s,
-                        "window_end": e,
+                        #"window_start": s,
+                        #"window_end": e,
                     }
                     row.update({k: float(rs[k]) for k in METRIC_COLS})
                     results.append(row)
@@ -325,23 +325,58 @@ def process_combination(session, alignment, normalization):
                 }
                 row.update({k: float(rs[k]) for k in METRIC_COLS})
                 results.append(row)
-    
-    # ── SAVE RESULTS ──
+
+    # ── SAVE RESULTS (WIDE FORMAT) ──
     if not results:
         print(f"😐  No results generated for {session}/{alignment}/{normalization}.")
         return
-    
+
     os.makedirs(OUT_DIR, exist_ok=True)
-    
-    # Output filename includes all three identifiers with double underscore format
     out_csv = os.path.join(
-        OUT_DIR, 
+        OUT_DIR,
         f"{session}_{alignment}__{normalization}_rqa_crqa.csv"
     )
-    
+
     df_results = pd.DataFrame(results)
-    df_results.to_csv(out_csv, index=False)
-    print(f"✅  Results written to {out_csv} ({len(df_results)} rows)")
+
+    # Pivot so each 'column' (RQA/CRQA variable) becomes a prefix for its metrics
+    id_cols = ["participant", "condition", "window_index"]
+    metric_cols = [c for c in df_results.columns if c not in id_cols + ["column"]]
+
+    # Make column names like 'head_rotation_rad_perc_recur', 'crqa_head_pupil_mag_entropy', etc.
+    df_wide = (
+        df_results
+        .pivot_table(
+            index=id_cols,
+            columns="column",
+            values=metric_cols
+        )
+    )
+
+    # Flatten multi-index columns
+    df_wide.columns = [f"{col2}_{col1}" for col1, col2 in df_wide.columns]
+    df_wide.reset_index(inplace=True)
+
+    df_wide.to_csv(out_csv, index=False)
+    print(f"✅  Saved wide-format results to {out_csv} ({len(df_wide)} rows, {len(df_wide.columns)} cols)")
+
+    
+    # # ── SAVE RESULTS ──
+    # if not results:
+    #     print(f"😐  No results generated for {session}/{alignment}/{normalization}.")
+    #     return
+    
+    # os.makedirs(OUT_DIR, exist_ok=True)
+    
+    # # Output filename includes all three identifiers with double underscore format
+    # out_csv = os.path.join(
+    #     OUT_DIR, 
+    #     f"{session}_{alignment}__{normalization}_rqa_crqa.csv"
+    # )
+    
+    # df_results = pd.DataFrame(results)
+    # df_results.to_csv(out_csv, index=False)
+    # print(f"✅  Results written to {out_csv} ({len(df_results)} rows)")
 
 
 def main():
@@ -351,8 +386,6 @@ def main():
     print("="*70)
     print(f"Sessions: {SESSIONS}")
     print(f"Alignments: {ALIGNMENTS}")
-    print(f"Normalizations: {NORMALIZATIONS}")
-    print(f"Total combinations: {len(SESSIONS) * len(ALIGNMENTS) * len(NORMALIZATIONS)}")
     
     # Track completion
     completed = []
@@ -360,29 +393,28 @@ def main():
     
     for session in SESSIONS:
         for alignment in ALIGNMENTS:
-            for normalization in NORMALIZATIONS:
-                try:
-                    process_combination(session, alignment, normalization)
-                    completed.append(f"{session}_{alignment}_{normalization}")
-                except Exception as e:
-                    error_msg = f"{session}_{alignment}_{normalization}"
-                    failed.append(error_msg)
-                    print(f"❌ Error processing {error_msg}: {e}")
-                    import traceback
-                    traceback.print_exc()
+            try:
+                process_combination(session, alignment, "original")
+                completed.append(f"{session}_{alignment}_original")
+            except Exception as e:
+                error_msg = f"{session}_{alignment}_original"
+                failed.append(error_msg)
+                print(f"❌ Error processing {error_msg}: {e}")
+                import traceback
+                traceback.print_exc()
     
     # Summary
     print(f"\n{'='*70}")
     print("PROCESSING COMPLETE")
     print(f"{'='*70}")
-    print(f"✅ Successful: {len(completed)}/{len(SESSIONS)*len(ALIGNMENTS)*len(NORMALIZATIONS)}")
+    print(f"✅ Successful: {len(completed)}/{len(SESSIONS)*len(ALIGNMENTS)}")
     if failed:
         print(f"❌ Failed: {len(failed)}")
         for f in failed:
             print(f"   - {f}")
     
     print(f"\nOutput directory: {OUT_DIR}")
-    print(f"Output files: {session}_{alignment}_{normalization}_rqa_crqa.csv")
+    print(f"Output files: {session}_{alignment}_rqa_crqa.csv")
 
 
 if __name__ == "__main__":

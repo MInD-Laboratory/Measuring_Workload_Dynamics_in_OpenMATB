@@ -51,47 +51,35 @@ def procrustes_frame_to_template(frame_xy: np.ndarray, templ_xy: np.ndarray, ava
     Y = templ_xy[idx, :]  # Target points
 
     # Center both point sets by subtracting their centroids
-    muX = X.mean(axis=0, keepdims=True)  # Source centroid
-    muY = Y.mean(axis=0, keepdims=True)  # Target centroid
-    Xc = X - muX  # Centered source
-    Yc = Y - muY  # Centered target
+    muX = X.mean(axis=0, keepdims=True)
+    muY = Y.mean(axis=0, keepdims=True)
+    Xc = X - muX
+    Yc = Y - muY
 
-    # Compute cross-covariance matrix between centered point sets
-    C = Xc.T @ Yc  # 2x2 matrix
+    # Compute best linear transform A (2x2)
+    A = np.linalg.lstsq(Xc, Yc, rcond=None)[0]  # minimizes ||Xc A - Yc||^2
 
-    # Find optimal rotation using Singular Value Decomposition
-    U, S, Vt = np.linalg.svd(C)
-    R = Vt.T @ U.T  # Rotation matrix
+    # Polar decomposition: A = R * M, where R is rotation, M is symmetric
+    U, _, Vt = np.linalg.svd(A)
+    R = U @ Vt
 
-    # Handle reflection case - ensure rotation has positive determinant
-    if np.linalg.det(R) < 0:
-        # Flip sign of second row of Vt to get proper rotation
-        Vt[1, :] *= -1
-        R = Vt.T @ U.T
+    # Compute the "scaling" component in the coordinate frame of R
+    M = R.T @ A
+    # Extract anisotropic scales (no shear)
+    sx, sy = np.diag(M)
 
-    # Calculate optimal uniform scaling factor
-    varX = (Xc**2).sum()  # Total variance of centered source points
-    # Scale is ratio of cross-covariance to source variance
-    # Handle edge case: if variance is very small (points nearly coincident),
-    # use scale=1.0 to avoid division issues and unrealistic scaling
-    if varX < 1e-10:  # Numerical tolerance for near-zero variance
-        s = 1.0
-        import warnings
-        warnings.warn("Source points have near-zero variance, using scale=1.0")
-    else:
-        s = (S.sum()) / varX
+    # Recompose: rotation + anisotropic scale
+    S = np.diag([sx, sy])
 
-    # Calculate translation vector (shift after rotation and scaling)
-    t = (muY.T - s * R @ muX.T).reshape(2)
+    # Compute translation
+    t = muY.T - R @ S @ muX.T
 
-    # Apply transformation to ALL landmarks (not just available ones)
-    Xall = frame_xy.copy()
-    Xall_centered = Xall - muX  # Center using same centroid as fitting
-    # Apply scaling, rotation, then translation
-    Xtrans = (s * (R @ Xall_centered.T)).T + muY
+    # Apply to all points
+    Xall_centered = frame_xy - muX
+    Xtrans = (R @ S @ Xall_centered.T).T + muY
 
     # Return success flag and transformation parameters
-    return True, float(s), float(t[0]), float(t[1]), R, Xtrans
+    return True, float(sx), float(sy), float(t[0]), float(t[1]), R, Xtrans
 
 def angle_between_points(p1: np.ndarray, p2: np.ndarray) -> float:
     """Calculate the angle between two 2D points.

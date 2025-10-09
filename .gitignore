@@ -1,5 +1,6 @@
 # General ignores
 figs/backup/
+backup/
 extra/
 __pycache__/
 *.pyc
@@ -24,3 +25,4 @@ Pose/data/processed_data/**
 !Pose/data/processed_data/baseline/
 !Pose/data/processed_data/baseline/linear_metrics/
 
+Pose/data/processed_data_windowed_norm/

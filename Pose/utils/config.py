@@ -46,8 +46,8 @@ class Config:
     # Directory paths - can be overridden by environment variables
     # Use paths relative to the Pose directory (where this config file is located)
     _BASE_DIR: str = str(Path(__file__).parent.parent)  # Pose directory
-    RAW_DIR: str = os.getenv("POSE_RAW_DIR", str(Path(_BASE_DIR) / "data" / "raw_data" / "experimental_pose"))
-    OUT_BASE: str = os.getenv("POSE_OUT_BASE", str(Path(_BASE_DIR) / "data" / "processed_data" / "experimental"))
+    RAW_DIR: str = os.getenv("POSE_RAW_DIR", str(Path(_BASE_DIR) / "data" / "raw_data" / "baseline_pose"))
+    OUT_BASE: str = os.getenv("POSE_OUT_BASE", str(Path(_BASE_DIR) / "data" / "processed_data" / "baseline"))
 
     # Participant info file - can be overridden by environment variable
     PARTICIPANT_INFO_FILE: str = os.getenv("PARTICIPANT_INFO_FILE", "participant_info.csv")
@@ -115,5 +115,5 @@ SAVE_PER_FRAME_PROCRUSTES_PARTICIPANT = True  # Save frame-level features (parti
 SAVE_PER_FRAME_ORIGINAL               = True  # Save frame-level features (original)
 
 # File overwrite behavior
-OVERWRITE               = True   # Overwrite existing processed files
+OVERWRITE               = False   # Overwrite existing processed files
 OVERWRITE_TEMPLATES     = False  # Preserve existing templates (don't regenerate)

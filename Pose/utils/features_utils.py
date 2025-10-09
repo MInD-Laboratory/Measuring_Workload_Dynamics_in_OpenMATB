@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import CFG, SCALE_BY_INTEROCULAR
 from .preprocessing_utils import detect_conf_prefix_case_insensitive, relevant_indices, find_real_colname
-from .normalize_utils import interocular_series
+from .normalization_utils import interocular_series
 from .geometry_utils import procrustes_frame_to_template, angle_between_points
 from .window_utils import windows_indices, is_distance_like_metric, linear_metrics
 
@@ -34,8 +34,8 @@ def blink_aperture_from_points(eye_top: np.ndarray, eye_bot: np.ndarray) -> floa
     top_mean = eye_top.mean(axis=0)
     # Average the lower eyelid landmarks to get a single "bottom" point
     bot_mean = eye_bot.mean(axis=0)
-    # Return the absolute vertical distance between top and bottom
-    return float(abs(top_mean[1] - bot_mean[1]))
+    # Return the Euclidean distance between top and bottom
+    return float(np.linalg.norm(top_mean - bot_mean))
 
 def mouth_aperture(p63: np.ndarray, p67: np.ndarray) -> float:
     """
@@ -77,7 +77,8 @@ def procrustes_features_for_file(df_norm: pd.DataFrame,
     head_rot = np.full(n, np.nan, float)      # head rotation angle (rad)
     head_tx  = np.full(n, np.nan, float)      # head translation x
     head_ty  = np.full(n, np.nan, float)      # head translation y
-    head_s   = np.full(n, np.nan, float)      # head scaling factor
+    head_sx  = np.full(n, np.nan, float)      # head scaling factor (x)
+    head_sy  = np.full(n, np.nan, float)      # head scaling factor (y)
     head_motion_mag = np.full(n, np.nan, float)  # combined motion magnitude
     blink_ap = np.full(n, np.nan, float)      # blink aperture (eye opening)
     mouth_ap = np.full(n, np.nan, float)      # mouth aperture
@@ -97,7 +98,6 @@ def procrustes_features_for_file(df_norm: pd.DataFrame,
     left_eye_ring  = [idx_of(i) for i in [37,38,39,40,41,42] if idx_of(i) >= 0]   # full left eye contour
     right_eye_ring = [idx_of(i) for i in [43,44,45,46,47,48] if idx_of(i) >= 0]   # full right eye contour
     mouth_pair = (idx_of(63), idx_of(67))     # vertical mouth landmarks
-    eye_pair = (idx_of(37), idx_of(46))       # left/right eye corners (for head rotation)
 
     # Process frame by frame
     for t in range(n):
@@ -112,20 +112,22 @@ def procrustes_features_for_file(df_norm: pd.DataFrame,
         available = np.isfinite(frame_xy).all(axis=1) & np.isfinite(templ_xy).all(axis=1)
 
         # Align current frame to template using Procrustes
-        ok, s, tx, ty, R, Xtrans = procrustes_frame_to_template(frame_xy, templ_xy, available)
+        ok, sx, sy, tx, ty, R, Xtrans = procrustes_frame_to_template(frame_xy, templ_xy, available)
         if not ok:  # skip if alignment failed
             continue
 
         # Save head-level features
-        head_s[t] = s
+        head_sx[t] = sx
+        head_sy[t] = sy
         head_tx[t] = tx
         head_ty[t] = ty
-        head_motion_mag[t] = math.sqrt(tx*tx + ty*ty + (s - 1.0)**2)  # combined magnitude
+        head_motion_mag[t] = math.sqrt(tx*tx + ty*ty + ((sx - 1.0)**2 + (sy - 1.0)**2))  # combined magnitude
 
-        # Compute head rotation using eye corners
-        i37, i46 = eye_pair
-        if i37 >= 0 and i46 >= 0 and np.isfinite(Xtrans[i37]).all() and np.isfinite(Xtrans[i46]).all():
-            head_rot[t] = angle_between_points(Xtrans[i37], Xtrans[i46])
+        # Compute head rotation using rotation matrix R from Procrustes alignment
+        # R is a 2x2 rotation matrix; extract angle using arctan2
+        if R is not None and R.shape == (2, 2):
+            angle = math.atan2(R[1, 0], R[0, 0])
+            head_rot[t] = angle
 
         # Helper: safely return 2 points if both valid
         def safe_points(idxs: List[int]) -> Optional[np.ndarray]:
@@ -180,13 +182,12 @@ def procrustes_features_for_file(df_norm: pd.DataFrame,
             pupil_dy[t] = float(np.mean([o[1] for o in offsets]))
             # Average magnitude across eyes → scalar "pupil_metric"
             pupil_av[t] = float(np.mean(mags))
-
-    # Return dictionary of all features for this file
-    return {
+    feat_dict = {
         "head_rotation_rad": head_rot,
         "head_tx": head_tx,
         "head_ty": head_ty,
-        "head_scale": head_s,
+        "head_scalex": head_sx,
+        "head_scaley": head_sy,
         "head_motion_mag": head_motion_mag,
         "blink_aperture": blink_ap,
         "mouth_aperture": mouth_ap,
@@ -194,6 +195,7 @@ def procrustes_features_for_file(df_norm: pd.DataFrame,
         "pupil_dy": pupil_dy,         # averaged vertical pupil offset
         "pupil_metric": pupil_av      # scalar pupil distance magnitude
     }
+    return feat_dict
 
 # --------- Per-file "original" features -------------------------------------
 def original_features_for_file(df_norm: pd.DataFrame) -> Dict[str, np.ndarray]:
