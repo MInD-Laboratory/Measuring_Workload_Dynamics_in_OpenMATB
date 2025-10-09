@@ -27,6 +27,7 @@ import sys
 import argparse
 from pathlib import Path
 from tqdm import tqdm
+import pandas as pd
 
 # Import helper utilities from your pipeline_utils module
 from pipeline_utils import (
@@ -61,179 +62,213 @@ DEFAULT_MODEL_CONFIG = {
 # Define which experiments to run
 # ============================================================================
 
+# ============================================================================
+# EXPERIMENT CONFIGURATION
+# ============================================================================
 EXPERIMENT_CONFIG = {
-    # ========================================
-    # Section 1: Normalization Comparison
-    # Compare different normalization methods on pose features
-    # ========================================
-    "normalization_comparison": {
+    # ==========================================================
+    # 1. Linear vs RQA vs Combined (Procrustes & None)
+    # ==========================================================
+    "feature_comparison": {
         "enabled": True,
-        "description": "Compare none/minmax/zscore normalization on linear pose",
+        "description": "Compare Procrustes vs None for linear, RQA, and combined features",
         "experiments": [
-            # Random split
-            {"name": "linear_pose_none_random", "feature_groups": ["linear_pose_exp_none"], "split_strategy": "random"},
-            {"name": "linear_pose_minmax_random", "feature_groups": ["linear_pose_exp_minmax"], "split_strategy": "random"},
-            {"name": "linear_pose_zscore_random", "feature_groups": ["linear_pose_exp_zscore"], "split_strategy": "random"},
-            # Participant split
-            {"name": "linear_pose_none_participant", "feature_groups": ["linear_pose_exp_none"], "split_strategy": "participant"},
-            {"name": "linear_pose_minmax_participant", "feature_groups": ["linear_pose_exp_minmax"], "split_strategy": "participant"},
-            {"name": "linear_pose_zscore_participant", "feature_groups": ["linear_pose_exp_zscore"], "split_strategy": "participant"},
-        ]
+            # -------------------------------
+            # Linear only
+            # -------------------------------
+            {"name": "linear_procrustes_random", "feature_groups": ["procrustes_linear_exp"], "split_strategy": "random"},
+            {"name": "linear_procrustes_participant", "feature_groups": ["procrustes_linear_exp"], "split_strategy": "participant"},
+            #{"name": "linear_none_random", "feature_groups": ["none_linear_exp"], "split_strategy": "random"},
+            #{"name": "linear_none_participant", "feature_groups": ["none_linear_exp"], "split_strategy": "participant"},
+
+            # -------------------------------
+            # RQA only
+            # -------------------------------
+            {"name": "rqa_procrustes_random", "feature_groups": ["procrustes_rqa_exp"], "split_strategy": "random"},
+            {"name": "rqa_procrustes_participant", "feature_groups": ["procrustes_rqa_exp"], "split_strategy": "participant"},
+            #{"name": "rqa_none_random", "feature_groups": ["none_rqa_exp"], "split_strategy": "random"},
+            #{"name": "rqa_none_participant", "feature_groups": ["none_rqa_exp"], "split_strategy": "participant"},
+
+            # -------------------------------
+            # Combined linear + RQA
+            # -------------------------------
+            {"name": "combined_procrustes_random", "feature_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"], "split_strategy": "random"},
+            {"name": "combined_procrustes_participant", "feature_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"], "split_strategy": "participant"},
+            #{"name": "combined_none_random", "feature_groups": ["none_linear_exp", "none_rqa_exp"], "split_strategy": "random"},
+            #{"name": "combined_none_participant", "feature_groups": ["none_linear_exp", "none_rqa_exp"], "split_strategy": "participant"},
+        ],
     },
 
-    "normalization_comparison_rqa": {
-        "enabled": True,
-        "description": "Compare none/minmax/zscore normalization on linear pose",
-        "experiments": [
-            # Random split
-            {"name": "linear_pose_none_random", "feature_groups": ["rqa_pose_exp_none"], "split_strategy": "random"},
-            {"name": "linear_pose_minmax_random", "feature_groups": ["rqa_pose_exp_minmax"], "split_strategy": "random"},
-            {"name": "linear_pose_zscore_random", "feature_groups": ["rqa_pose_exp_zscore"], "split_strategy": "random"},
-            # Participant split
-            {"name": "linear_pose_none_participant", "feature_groups": ["rqa_pose_exp_none"], "split_strategy": "participant"},
-            {"name": "linear_pose_minmax_participant", "feature_groups": ["rqa_pose_exp_minmax"], "split_strategy": "participant"},
-            {"name": "linear_pose_zscore_participant", "feature_groups": ["rqa_pose_exp_zscore"], "split_strategy": "participant"},
-        ]
-    },
-
-    # ========================================
-    # Section 2: Feature Type Comparison
-    # Compare linear vs nonlinear vs combined features
-    # ========================================
-    # "feature_comparison": {
+    # ==========================================================
+    # 2. Performance Metrics
+    # ==========================================================
+    # "performance_metrics": {
     #     "enabled": True,
-    #     "description": "Compare linear, RQA, and combined features",
+    #     "description": "Evaluate performance metrics alone",
     #     "experiments": [
-    #         # Linear features only
-    #         {"name": "linear_pose_exp_random", "feature_groups": ["linear_pose_exp_zscore"], "split_strategy": "random"},
-    #         {"name": "linear_pose_exp_participant", "feature_groups": ["linear_pose_exp_zscore"], "split_strategy": "participant"},
-
-    #         # RQA features only
-    #         {"name": "rqa_pose_exp_random", "feature_groups": ["rqa_pose_exp_zscore"], "split_strategy": "random"},
-    #         {"name": "rqa_pose_exp_participant", "feature_groups": ["rqa_pose_exp_zscore"], "split_strategy": "participant"},
-
-    #         # Combined linear + RQA
-    #         {"name": "linear_rqa_exp_random", "feature_groups": ["linear_pose_exp_zscore", "rqa_pose_exp_zscore"], "split_strategy": "random"},
-    #         {"name": "linear_rqa_exp_participant", "feature_groups": ["linear_pose_exp_zscore", "rqa_pose_exp_zscore"], "split_strategy": "participant"},
-    #     ]
-    # },
-
-    # ========================================
-    # Section 3: Performance Metrics
-    # Test performance metrics alone or with pose features
-    # ========================================
-    "performance_metrics": {
-        "enabled": True,
-        "description": "Evaluate performance metrics",
-        "experiments": [
-            {"name": "performance_exp_random", "feature_groups": ["performance_exp"], "split_strategy": "random"},
-            {"name": "performance_exp_participant", "feature_groups": ["performance_exp"], "split_strategy": "participant"},
-        ]
-    },
-
-    # ========================================
-    # Section 4: Baseline Data Impact
-    # Add baseline data to experimental data
-    # ========================================
-    # "baseline_impact": {
-    #     "enabled": False,  # Enable if you have baseline data
-    #     "description": "Test impact of adding baseline data",
-    #     "experiments": [
-    #         {
-    #             "name": "linear_exp_bsl_pose",
-    #             "feature_groups": ["linear_pose_exp_zscore", "linear_pose_bsl_zscore"],
-    #             "split_strategy": "participant",
-    #             "n_seeds": 10,  # Override default seed count
-    #         },
-    #         {
-    #             "name": "linear_exp_bsl_perf",
-    #             "feature_groups": ["linear_pose_exp_zscore", "performance_bsl"],
-    #             "split_strategy": "participant",
-    #             "n_seeds": 10,
-    #         },
-    #     ]
+    #         {"name": "performance_random", "feature_groups": ["performance_exp"], "split_strategy": "random"},
+    #         {"name": "performance_participant", "feature_groups": ["performance_exp"], "split_strategy": "participant"},
+    #     ],
     # },
 }
+
 
 # ============================================================================
 # LEARNING CURVES CONFIGURATION
 # ============================================================================
+# ============================================================================
+# LEARNING CURVES CONFIGURATION
+# ============================================================================
 LEARNING_CURVES_CONFIG = {
-    "enabled": True,  # Set to True to run learning curves
-    "description": "Incremental training with growing data",
-    
-    # Define learning curve experiments
+    "enabled": False,
+    "description": "Learning curves for Procrustes vs None with and without baseline data",
     "experiments": [
-        # Linear pose + performance WITH baseline
+        # ==========================================================
+        # ======== PROCRUSTES-ALIGNED FEATURE SETS ========
+        # ==========================================================
+
+        # --- WITH baseline (pre + exp) ---
         {
-            "name": "lc_linear_perf_with_baseline",
-            "baseline_groups": ["linear_pose_bsl_zscore", "performance_bsl"],
-            "experimental_groups": ["linear_pose_exp_zscore", "performance_exp"],
-            "minutes": list(range(0, 8)),  # 0-7 minutes (starts at 0 with baseline)
+            "name": "lc_procrustes_linear_rec_perf_with_baseline",
+            "baseline_groups": ["procrustes_linear_bsl", "procrustes_rqa_bsl", "performance_bsl"],
+            "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp", "performance_exp"],
+            "minutes": list(range(0, 8)),  # 0 = baseline, 1–7 = experimental increments
             "skip_every": 2,
             "n_seeds": 20,
         },
-        
-        # Linear pose + performance WITHOUT baseline
         {
-            "name": "lc_linear_perf_no_baseline",
-            "baseline_groups": [],  # Empty = no baseline
-            "experimental_groups": ["linear_pose_exp_zscore", "performance_exp"],
-            "minutes": list(range(1, 8)),  # 1-7 minutes (starts at 1, no baseline)
+            "name": "lc_procrustes_linear_perf_with_baseline",
+            "baseline_groups": ["procrustes_linear_bsl", "performance_bsl"],
+            "experimental_groups": ["procrustes_linear_exp", "performance_exp"],
+            "minutes": list(range(0, 8)),
             "skip_every": 2,
             "n_seeds": 20,
         },
-        
-        # Linear pose ONLY WITH baseline
         {
-            "name": "lc_linear_only_with_baseline",
-            "baseline_groups": ["linear_pose_bsl_zscore"],
-            "experimental_groups": ["linear_pose_exp_zscore"],
+            "name": "lc_procrustes_rec_perf_with_baseline",
+            "baseline_groups": ["procrustes_rqa_bsl", "performance_bsl"],
+            "experimental_groups": ["procrustes_rqa_exp", "performance_exp"],
+            "minutes": list(range(0, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+        {
+            "name": "lc_procrustes_linear_rec_with_baseline",
+            "baseline_groups": ["procrustes_linear_bsl", "procrustes_rqa_bsl"],
+            "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
             "minutes": list(range(0, 8)),
             "skip_every": 2,
             "n_seeds": 20,
         },
 
+        # --- WITHOUT baseline (exp only) ---
         {
-            "name": "lc_linear_only_wo_baseline",
+            "name": "lc_procrustes_linear_rec_perf_no_baseline",
             "baseline_groups": [],
-            "experimental_groups": ["linear_pose_exp_zscore"],
+            "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp", "performance_exp"],
+            "minutes": list(range(1, 8)),  # starts from minute 1 (no baseline)
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+        {
+            "name": "lc_procrustes_linear_perf_no_baseline",
+            "baseline_groups": [],
+            "experimental_groups": ["procrustes_linear_exp", "performance_exp"],
             "minutes": list(range(1, 8)),
             "skip_every": 2,
             "n_seeds": 20,
         },
-        
-        # # RQA + performance WITH baseline
-        # {
-        #     "name": "lc_rqa_perf_with_baseline",
-        #     "baseline_groups": ["rqa_pose_bsl_zscore", "performance_bsl"],
-        #     "experimental_groups": ["rqa_pose_exp_zscore", "performance_exp"],
-        #     "minutes": list(range(0, 8)),
-        #     "skip_every": 2,
-        #     "n_seeds": 20,
-        # },
-        
-        # # ALL features (linear + RQA + performance) WITH baseline
-        # {
-        #     "name": "lc_all_features_with_baseline",
-        #     "baseline_groups": ["linear_pose_bsl_zscore", "rqa_pose_bsl_zscore", "performance_bsl"],
-        #     "experimental_groups": ["linear_pose_exp_zscore", "rqa_pose_exp_zscore", "performance_exp"],
-        #     "minutes": list(range(0, 8)),
-        #     "skip_every": 2,
-        #     "n_seeds": 20,
-        # },
-        
-        # # ALL features WITHOUT baseline
-        # {
-        #     "name": "lc_all_features_no_baseline",
-        #     "baseline_groups": [],
-        #     "experimental_groups": ["linear_pose_exp_zscore", "rqa_pose_exp_zscore", "performance_exp"],
-        #     "minutes": list(range(1, 8)),
-        #     "skip_every": 2,
-        #     "n_seeds": 20,
-        # },
-    ]
+        {
+            "name": "lc_procrustes_rec_perf_no_baseline",
+            "baseline_groups": [],
+            "experimental_groups": ["procrustes_rqa_exp", "performance_exp"],
+            "minutes": list(range(1, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+        {
+            "name": "lc_procrustes_linear_rec_no_baseline",
+            "baseline_groups": [],
+            "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
+            "minutes": list(range(1, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+
+        # ==========================================================
+        # ======== NONE-ALIGNED FEATURE SETS ========
+        # ==========================================================
+
+        # --- WITH baseline (pre + exp) ---
+        {
+            "name": "lc_none_linear_rec_perf_with_baseline",
+            "baseline_groups": ["none_linear_bsl", "none_rqa_bsl", "performance_bsl"],
+            "experimental_groups": ["none_linear_exp", "none_rqa_exp", "performance_exp"],
+            "minutes": list(range(0, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+        {
+            "name": "lc_none_linear_perf_with_baseline",
+            "baseline_groups": ["none_linear_bsl", "performance_bsl"],
+            "experimental_groups": ["none_linear_exp", "performance_exp"],
+            "minutes": list(range(0, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+        {
+            "name": "lc_none_rec_perf_with_baseline",
+            "baseline_groups": ["none_rqa_bsl", "performance_bsl"],
+            "experimental_groups": ["none_rqa_exp", "performance_exp"],
+            "minutes": list(range(0, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+        {
+            "name": "lc_none_linear_rec_with_baseline",
+            "baseline_groups": ["none_linear_bsl", "none_rqa_bsl"],
+            "experimental_groups": ["none_linear_exp", "none_rqa_exp"],
+            "minutes": list(range(0, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+
+        # --- WITHOUT baseline (exp only) ---
+        {
+            "name": "lc_none_linear_rec_perf_no_baseline",
+            "baseline_groups": [],
+            "experimental_groups": ["none_linear_exp", "none_rqa_exp", "performance_exp"],
+            "minutes": list(range(1, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+        {
+            "name": "lc_none_linear_perf_no_baseline",
+            "baseline_groups": [],
+            "experimental_groups": ["none_linear_exp", "performance_exp"],
+            "minutes": list(range(1, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+        {
+            "name": "lc_none_rec_perf_no_baseline",
+            "baseline_groups": [],
+            "experimental_groups": ["none_rqa_exp", "performance_exp"],
+            "minutes": list(range(1, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+        {
+            "name": "lc_none_linear_rec_no_baseline",
+            "baseline_groups": [],
+            "experimental_groups": ["none_linear_exp", "none_rqa_exp"],
+            "minutes": list(range(1, 8)),
+            "skip_every": 2,
+            "n_seeds": 20,
+        },
+    ],
 }
+
 
 # ============================================================================
 # FEATURE GROUP DEFINITIONS
@@ -242,27 +277,43 @@ LEARNING_CURVES_CONFIG = {
 
 FEATURE_GROUPS = {
     # Linear pose features - different normalizations
-    "linear_pose_exp_none": ("_staged_data/linear_pose/linear_original_original_exp.csv", "main"),
-    "linear_pose_exp_minmax": ("_staged_data/linear_pose/linear_minmax_original_exp.csv", "main"),
-    "linear_pose_exp_zscore": ("_staged_data/linear_pose/linear_zscore_original_exp.csv", "main"),
 
-    "linear_pose_bsl_none": ("_staged_data/linear_pose/linear_original_original_bsl.csv", "pre"),
-    "linear_pose_bsl_minmax": ("_staged_data/linear_pose/linear_minmax_original_bsl.csv", "pre"),
-    "linear_pose_bsl_zscore": ("_staged_data/linear_pose/linear_zscore_original_bsl.csv", "pre"),
+    # Procrustes aligned linear features
+    "procrustes_linear_exp": ("_staged_data/linear_pose/procrustes_global_linear_exp.csv", "main"),
+    "procrustes_linear_bsl": ("_staged_data/linear_pose/procrustes_global_linear_bsl.csv", "pre"),
+
+    # No normalization linear features
+    "none_linear_exp": ("_staged_data/linear_pose/original_linear_exp.csv", "main"),
+    "none_linear_bsl": ("_staged_data/linear_pose/original_linear_bsl.csv", "pre"),
 
     # RQA features - different normalizations
-    "rqa_pose_exp_none": ("_staged_data/rqa_pose/exp_original_original_rqa.csv", "main"),
-    #"rqa_pose_exp_minmax": ("exp_minmax_rqa.csv", "main"),
-    #"rqa_pose_exp_zscore": ("exp_zscore_rqa.csv", "main"),
 
-    #"rqa_pose_bsl_none": ("bsl_none_rqa.csv", "pre"),
-    #"rqa_pose_bsl_minmax": ("bsl_minmax_rqa.csv", "pre"),
-    #"rqa_pose_bsl_zscore": ("bsl_zscore_rqa.csv", "pre"),
+    # Procrustes aligned recurrence features
+    "procrustes_rqa_exp": ("_staged_data/rqa_pose/experimental_procrustes_global__original_rqa_crqa.csv", "main"),
+    "procrustes_rqa_bsl": ("_staged_data/rqa_pose/baseline_procrustes_global__original_rqa_crqa.csv", "pre"),
 
-    # Performance metrics (no normalization needed)
+    # No normalization recurrence features
+    "none_rqa_exp": ("_staged_data/rqa_pose/experimental_original__original_rqa_crqa.csv", "main"),
+    "none_rqa_bsl": ("_staged_data/rqa_pose/baseline_original__original_rqa_crqa.csv", "pre"),
+
+    # Task Performance metrics 
     "performance_exp": ("_staged_data/performance/performance_exp.csv", "main"),
     "performance_bsl": ("_staged_data/performance/performance_bsl.csv", "pre"),
 }
+
+# ============================================================================
+# CLEANUP STAGED DATA FILES 
+# ============================================================================
+def clean_staged_data(filepath: Path):
+    """Remove metadata columns if they exist."""
+    try:
+        df = pd.read_csv(filepath)
+        drop_cols = ["source", "t_start_frame", "t_end_frame", "window_start", "window_end"]
+        df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+        df.to_csv(filepath, index=False)
+    except Exception as e:
+        print(f"[WARN] Could not clean {filepath}: {e}")
+
 
 # ============================================================================
 # COMMAND LINE ARGUMENTS
@@ -335,6 +386,13 @@ def main():
     print("=" * 80)
     print("RANDOM FOREST WORKLOAD DETECTION PIPELINE")
     print("=" * 80)
+
+    # Clean all staged CSVs before running
+    print("\n[INFO] Cleaning staged data files...")
+    for name, (path, phase) in FEATURE_GROUPS.items():
+        if os.path.exists(path):
+            clean_staged_data(Path(path))
+
 
     # --------------------------------------------------------------
     # 1. Generate all model configurations (excluding learning curves)
