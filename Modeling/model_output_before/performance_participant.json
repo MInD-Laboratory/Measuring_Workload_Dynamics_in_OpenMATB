@@ -1,0 +1,54 @@
+{
+  "name": "performance_participant",
+  "config": {
+    "n_seeds": 20,
+    "feature_selection": "backward",
+    "selection_level": "metric",
+    "selection_stopping": "drop",
+    "use_pca": false,
+    "pca_variance": 0.95,
+    "write_cm": true,
+    "name": "performance_participant",
+    "feature_groups": [
+      "performance_exp"
+    ],
+    "split_strategy": "participant"
+  },
+  "metrics": {
+    "test_acc_mean": 0.5223557878435926,
+    "test_acc_std": 0.023528996257671082,
+    "test_bal_acc_mean": 0.5211172161172161,
+    "test_bal_acc_std": 0.02437820064107267,
+    "test_f1_mean": 0.5144147437206124,
+    "test_f1_std": 0.023290719639676733,
+    "test_kappa_mean": 0.2831625750970773,
+    "test_kappa_std": 0.03548970647021786
+  },
+  "confusion_matrix": [
+    [
+      48.92857142857142,
+      33.61904761904761,
+      17.452380952380953
+    ],
+    [
+      32.51648351648352,
+      35.59706959706959,
+      31.88644688644689
+    ],
+    [
+      9.666666666666668,
+      18.523809523809526,
+      71.80952380952381
+    ]
+  ],
+  "selected_features": [
+    "track_point_accuracy",
+    "resman_point_accuracy",
+    "sysmon_point_accuracy",
+    "mean_sysmon_response_time",
+    "mean_comms_response_time"
+  ],
+  "n_features": 5,
+  "n_seeds": 20,
+  "timestamp": "2025-10-10T00:50:31.242107"
+}

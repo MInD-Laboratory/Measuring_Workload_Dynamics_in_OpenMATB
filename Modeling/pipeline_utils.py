@@ -528,7 +528,11 @@ def select_features_once(df, split_strategy, config, seed=0):
     return selected_features
 
 
-def fit_and_evaluate(df, split_strategy, seed, selected_features, config):
+def fit_and_evaluate(df, split_strategy, seed, config):
+    """
+    Fit and evaluate with PER-SEED feature selection.
+    Feature selection now happens fresh for each seed.
+    """
     # Split data
     train_df, test_df = make_train_test_split(df, split_strategy, random_state=seed)
 
@@ -540,26 +544,37 @@ def fit_and_evaluate(df, split_strategy, seed, selected_features, config):
     X_train = drop_identifier_columns(train_df).drop(columns=["condition"], errors="ignore")
     X_test  = drop_identifier_columns(test_df).drop(columns=["condition"], errors="ignore")
 
-    # Be robust to missing columns
-    selected = [c for c in selected_features if c in X_train.columns]
-    if not selected:
-        raise ValueError("No selected_features found in dataframe columns.")
-    X_train = X_train[selected]
-    X_test  = X_test[selected]
+    # *** FEATURE SELECTION MOVED HERE (per-seed) ***
+    selection_method = config.get("feature_selection")
+    
+    if selection_method == "backward":
+        selected_features, _ = backward_elimination_rf(X_train, y_train, random_state=seed)
+    elif selection_method == "forward":
+        # Forward selection not implemented yet
+        selected_features = list(X_train.columns)
+    elif selection_method is None:
+        selected_features = list(X_train.columns)
+    else:
+        raise ValueError(f"Unknown feature_selection method: '{selection_method}'")
+    
+    # Ensure we have at least some features
+    if not selected_features:
+        selected_features = list(X_train.columns)
+    
+    # Apply selected features
+    X_train = X_train[selected_features]
+    X_test = X_test[selected_features]
 
     # Pipeline
     pipeline_steps = []
 
-    # (Optional) scaling—RF doesn't need it, but harmless if you mix in other models
     if config.get("use_scaler", True):
         pipeline_steps.append(("scaler", StandardScaler()))
 
-    # (Optional) PCA
     if config.get("use_pca", False):
         pca_variance = config.get("pca_variance", 0.95)
         pipeline_steps.append(("pca", PCA(n_components=pca_variance)))
 
-    # RF with safe kwargs (avoid double n_jobs)
     rf_kwargs = dict(RF_PARAMS)
     rf_kwargs["random_state"] = seed
     rf_kwargs.setdefault("n_jobs", -1)
@@ -580,26 +595,16 @@ def fit_and_evaluate(df, split_strategy, seed, selected_features, config):
     }
 
     cm = confusion_matrix(y_test, y_pred, labels=LABELS, normalize="true") * 100.0
-    return {"metrics": metrics, "cm": cm}
+    
+    # *** RETURN SELECTED FEATURES TOO ***
+    return {"metrics": metrics, "cm": cm, "selected_features": selected_features}
 
 
 
 def run_single_model(name, config, output_dir, force=False, resume=False):
     """
     Run a single model configuration across multiple random seeds.
-    
-    This is the main training function. It:
-      1. Loads and merges feature files
-      2. Performs feature selection once
-      3. Trains models across multiple seeds
-      4. Aggregates results and saves to JSON
-    
-    Args:
-        name: Model name
-        config: Model configuration dict
-        output_dir: Directory to save results
-        force: If True, overwrite existing results
-        resume: If True, resume incomplete runs
+    Now does feature selection PER-SEED instead of once globally.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -624,30 +629,26 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
     )
     print(f"Loaded data: {merged.shape}")
     
-    # Feature selection (done once, reused across seeds)
-    selected_features = select_features_once(
-        merged,
-        split_strategy=config["split_strategy"],
-        config=config,
-        seed=0
-    )
+    # *** REMOVE select_features_once() call ***
+    # Feature selection now happens inside fit_and_evaluate() per-seed
     
     # Run across multiple seeds
     n_seeds = config.get("n_seeds", 20)
     all_metrics = []
     all_cms = []
+    all_selected_features = []  # Track which features each seed selected
     
     for seed in tqdm(range(n_seeds), desc=f"{name}"):
         result = fit_and_evaluate(
             merged,
             split_strategy=config["split_strategy"],
             seed=seed,
-            selected_features=selected_features,
-            config=config
+            config=config  # *** Pass config instead of selected_features ***
         )
         
         all_metrics.append(result["metrics"])
         all_cms.append(result["cm"])
+        all_selected_features.append(result["selected_features"])
     
     # Aggregate results across seeds
     metrics_df = pd.DataFrame(all_metrics)
@@ -666,14 +667,25 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
     # Average confusion matrix across seeds
     cm_avg = np.mean(np.stack(all_cms, axis=0), axis=0)
     
+    # *** Compute feature selection statistics ***
+    # Find features selected by majority of seeds (>50%)
+    from collections import Counter
+    feature_counts = Counter()
+    for features in all_selected_features:
+        feature_counts.update(features)
+    
+    total_seeds = len(all_selected_features)
+    common_features = [f for f, count in feature_counts.items() if count > total_seeds / 2]
+    
     # Save results
     results = {
         "name": name,
         "config": {k: v for k, v in config.items() if k != "files"},
         "metrics": aggregated_metrics,
         "confusion_matrix": cm_avg.tolist(),
-        "selected_features": selected_features,
-        "n_features": len(selected_features),
+        "selected_features_common": common_features,  # Features selected by >50% of seeds
+        "n_features_mean": float(np.mean([len(f) for f in all_selected_features])),
+        "n_features_std": float(np.std([len(f) for f in all_selected_features], ddof=1)),
         "n_seeds": n_seeds,
         "timestamp": datetime.now().isoformat(),
     }
@@ -684,6 +696,7 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
     print(f"✓ Completed: {name}")
     print(f"  Balanced Accuracy: {aggregated_metrics['test_bal_acc_mean']:.4f} "
           f"± {aggregated_metrics['test_bal_acc_std']:.4f}")
+    print(f"  Features selected: {results['n_features_mean']:.1f} ± {results['n_features_std']:.1f}")
     
     # Log to CSV
     log_to_csv(name, results, output_dir)
@@ -761,9 +774,224 @@ def print_summary(output_dir):
 # ============================================================================
 # 6. LEARNING CURVES
 # ============================================================================
+# def run_learning_curve_experiment(config, feature_groups, default_config, output_dir, force=False):
+#     """
+#     Run learning curve analysis with incremental training data.
+    
+#     Learning curves show how model performance changes as we add more
+#     training data. This is useful for understanding:
+#       - How much data is needed for good performance
+#       - Whether baseline data helps
+#       - How quickly the model adapts to new conditions
+    
+#     The experiment:
+#       1. Optionally starts with baseline data (minute 0)
+#       2. Incrementally adds experimental data (minutes 1, 2, 3, ...)
+#       3. Tests on the remaining experimental data
+#       4. Repeats across multiple random seeds
+    
+#     If no baseline_groups specified, starts at minute 1 instead of minute 0.
+    
+#     Args:
+#         config: Learning curve configuration dict with:
+#             - name: Experiment name
+#             - baseline_groups: List of baseline feature groups (optional, can be empty)
+#             - experimental_groups: List of experimental feature groups (required)
+#             - minutes: List of cutoff minutes to test
+#             - skip_every: Window skipping parameter (optional)
+#             - n_seeds: Number of random seeds (optional)
+#         feature_groups: Mapping of group names to file paths
+#         default_config: Default model settings
+#         output_dir: Directory to save results
+#         force: If True, overwrite existing results
+#     """
+#     name = config["name"]
+#     output_path = Path(output_dir) / f"{name}.json"
+    
+#     # Check if already complete
+#     if output_path.exists() and not force:
+#         print(f"[SKIP] {name}: already complete")
+#         return
+    
+#     print(f"\n{'='*60}")
+#     print(f"Running Learning Curves: {name}")
+#     print(f"{'='*60}")
+    
+#     # Check if we have baseline data
+#     has_baseline = config.get("baseline_groups") and len(config["baseline_groups"]) > 0
+    
+#     # Load baseline data if specified
+#     if has_baseline:
+#         baseline_files = [feature_groups[g] for g in config["baseline_groups"]]
+#         baseline_df = load_and_merge_features(baseline_files, skip_every=config.get("skip_every"))
+#         print(f"Baseline data: {baseline_df.shape}")
+        
+#         # Extract features for baseline (drop ID columns)
+#         X_baseline = drop_identifier_columns(baseline_df).drop(columns=["condition"], errors="ignore")
+#         y_baseline = baseline_df["condition"].values
+#     else:
+#         print("No baseline data - will start from minute 1")
+#         X_baseline = None
+#         y_baseline = None
+    
+#     # Load experimental data
+#     exp_files = [feature_groups[g] for g in config["experimental_groups"]]
+#     exp_df = load_and_merge_features(exp_files, skip_every=config.get("skip_every"))
+#     print(f"Experimental data: {exp_df.shape}")
+
+#     if "window_index" not in exp_df.columns:
+#         raise ValueError("Expected 'window_index' in experimental data.")
+#     exp_df["w_idx"] = exp_df["window_index"].astype(int)
+
+#     GROUP_COLS = [c for c in ["participant", "trial_id", "trial", "session"] if c in exp_df.columns]
+#     if not GROUP_COLS:
+#         exp_df["__all__"] = 1
+#         GROUP_COLS = ["__all__"]
+    
+#     # Settings
+#     minutes = config["minutes"]
+#     n_seeds = config.get("n_seeds", default_config.get("n_seeds", 20))
+    
+#     # Results storage: results[minute][metric] = [scores across seeds]
+#     results = {
+#         m: {
+#             "BalancedAcc": [],
+#             "F1": [],
+#             "Kappa": [],
+#         }
+#         for m in minutes
+#     }
+    
+#     # Run across seeds
+#     for seed in tqdm(range(n_seeds), desc=f"{name}"):
+#         for minute in minutes:
+#             # Convert minutes to window index
+#             # With 60s windows and 50% overlap (30s step), window_index = minute * 2
+#             window_cutoff = minute * 2
+
+#             # build non-overlapping TEST via parity, then purge TRAIN neighbors
+#             # TEST: all windows >= cutoff that match parity (avoid test-test overlap)
+#             test_parity = window_cutoff % 2
+#             mask_test = (exp_df["w_idx"] >= window_cutoff) & ((exp_df["w_idx"] % 2) == test_parity)
+
+#             # TRAIN: all windows before cutoff
+#             mask_train = exp_df["w_idx"] < window_cutoff
+
+#             # If there are test windows, purge any overlapping TRAIN windows (neighbors ±1 in same group)
+#             if mask_test.any():
+#                 test_keys = exp_df.loc[mask_test, GROUP_COLS + ["w_idx"]].copy()
+#                 nbr_minus = test_keys.copy(); nbr_minus["w_idx"] = nbr_minus["w_idx"] - 1
+#                 nbr_plus  = test_keys.copy();  nbr_plus["w_idx"]  = nbr_plus["w_idx"]  + 1
+#                 banned = pd.concat([test_keys, nbr_minus, nbr_plus], ignore_index=True)
+#                 banned = banned[banned["w_idx"] >= 0]
+
+#                 ban_idx = pd.MultiIndex.from_frame(banned[GROUP_COLS + ["w_idx"]])
+#                 train_frame = exp_df.loc[mask_train, GROUP_COLS + ["w_idx"]]
+#                 train_idx = pd.MultiIndex.from_frame(train_frame)
+#                 to_purge = train_idx.isin(ban_idx)
+#                 # clear overlapped train windows
+#                 purge_index = exp_df.loc[mask_train].index[to_purge]
+#                 if len(purge_index) > 0:
+#                     mask_train.loc[purge_index] = False
+#             # ------------------------------------------------------------------------------- # <<<
+            
+#             # Skip if no test data
+#             if mask_test.sum() == 0:
+#                 continue
+            
+#             # Prepare experimental training data
+#             exp_train = exp_df[mask_train]
+#             exp_test = exp_df[mask_test]
+            
+#             # Build training set based on whether we have baseline and experimental data
+#             if minute == 0:
+#                 # At minute 0, only use baseline data (if available)
+#                 if not has_baseline:
+#                     # No baseline and no experimental data yet - skip
+#                     continue
+#                 X_train = X_baseline
+#                 y_train = y_baseline
+            
+#             else:
+#                 # minute > 0: use experimental data (and optionally baseline)
+#                 if exp_train.empty:
+#                     # No experimental training data yet - skip
+#                     continue
+                
+#                 X_exp_train = drop_identifier_columns(exp_train).drop(columns=["condition"], errors="ignore")
+#                 y_exp_train = exp_train["condition"].values
+                
+#                 if has_baseline:
+#                     # Combine baseline + experimental
+#                     X_train = pd.concat([X_baseline, X_exp_train], ignore_index=True)
+#                     y_train = np.concatenate([y_baseline, y_exp_train])
+#                 else:
+#                     # Only experimental data
+#                     X_train = X_exp_train
+#                     y_train = y_exp_train
+            
+#             # Prepare test data
+#             X_test = drop_identifier_columns(exp_test).drop(columns=["condition"], errors="ignore")
+#             y_test = exp_test["condition"].values
+            
+#             # Ensure same features in train and test
+#             common_features = list(set(X_train.columns) & set(X_test.columns))
+#             X_train = X_train[common_features]
+#             X_test = X_test[common_features]
+            
+#             # Build and train pipeline
+#             # Build classifier kwargs safely
+#             rf_kwargs = dict(RF_PARAMS)         # don't mutate the global
+#             rf_kwargs["random_state"] = seed
+#             rf_kwargs.setdefault("n_jobs", -1)  # only set if not already present
+
+#             # Pipeline
+#             pipe = Pipeline([
+#                 ("scaler", StandardScaler()),
+#                 ("rf", RandomForestClassifier(**rf_kwargs)),
+#             ])
+
+            
+#             pipe.fit(X_train, y_train)
+#             y_pred = pipe.predict(X_test)
+            
+#             # Compute metrics
+#             results[minute]["BalancedAcc"].append(balanced_accuracy_score(y_test, y_pred))
+#             results[minute]["F1"].append(f1_score(y_test, y_pred, labels=LABELS, average="weighted"))
+#             results[minute]["Kappa"].append(cohen_kappa_score(y_test, y_pred, labels=LABELS))
+    
+#     # Save results
+#     output_data = {
+#         "name": name,
+#         "config": config,
+#         "has_baseline": has_baseline,
+#         "minutes": minutes,
+#         "results": results,
+#         "n_seeds": n_seeds,
+#         "timestamp": datetime.now().isoformat(),
+#     }
+    
+#     with open(output_path, "w") as f:
+#         json.dump(output_data, f, indent=2)
+    
+#     print(f"✓ Completed: {name}")
+    
+#     # Print summary
+#     print("\nLearning Curve Summary (Balanced Accuracy):")
+#     print(f"{'Minute':<10} {'Mean':<10} {'Std':<10} {'N':<10}")
+#     print("-" * 40)
+#     for minute in minutes:
+#         if results[minute]["BalancedAcc"]:
+#             mean_acc = np.mean(results[minute]["BalancedAcc"])
+#             std_acc = np.std(results[minute]["BalancedAcc"], ddof=1)
+#             n_samples = len(results[minute]["BalancedAcc"])
+#             print(f"{minute:<10} {mean_acc*100:.2f}%    {std_acc*100:.2f}%    {n_samples:<10}")#!/usr/bin/env python3
+
+
 def run_learning_curve_experiment(config, feature_groups, default_config, output_dir, force=False):
     """
     Run learning curve analysis with incremental training data.
+    NOW WITH PER-SEED FEATURE SELECTION.
     
     Learning curves show how model performance changes as we add more
     training data. This is useful for understanding:
@@ -776,8 +1004,16 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
       2. Incrementally adds experimental data (minutes 1, 2, 3, ...)
       3. Tests on the remaining experimental data
       4. Repeats across multiple random seeds
+      5. Feature selection done per-seed (not globally)
     
     If no baseline_groups specified, starts at minute 1 instead of minute 0.
+    
+    Normalization modes (only applied when has_baseline=False):
+      - "standard": Fit scaler on train, transform both train and test (default sklearn)
+      - "adaptive_per_trial": Compute mean/std per (participant, condition) from train,
+                              apply those stats to transform test data for that trial
+      - "adaptive_global": Compute mean/std globally from all train data,
+                          apply to all test data
     
     Args:
         config: Learning curve configuration dict with:
@@ -787,6 +1023,8 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
             - minutes: List of cutoff minutes to test
             - skip_every: Window skipping parameter (optional)
             - n_seeds: Number of random seeds (optional)
+            - normalization_mode: "standard", "adaptive_per_trial", or "adaptive_global" (optional)
+            - feature_selection: "backward", "forward", or None (optional)
         feature_groups: Mapping of group names to file paths
         default_config: Default model settings
         output_dir: Directory to save results
@@ -807,6 +1045,25 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
     # Check if we have baseline data
     has_baseline = config.get("baseline_groups") and len(config["baseline_groups"]) > 0
     
+    # Get normalization mode (default to standard)
+    norm_mode = config.get("normalization_mode", "standard")
+    valid_modes = ["standard", "adaptive_per_trial", "adaptive_global"]
+    if norm_mode not in valid_modes:
+        raise ValueError(f"normalization_mode must be one of {valid_modes}, got '{norm_mode}'")
+    
+    # Adaptive modes only work without baseline
+    if has_baseline and norm_mode != "standard":
+        raise ValueError(
+            f"Adaptive normalization modes ('{norm_mode}') can only be used when "
+            f"baseline_groups is empty or not specified. Set has_baseline=False."
+        )
+    
+    # Get feature selection method
+    selection_method = config.get("feature_selection", default_config.get("feature_selection"))
+    
+    print(f"Normalization mode: {norm_mode}")
+    print(f"Feature selection: {selection_method if selection_method else 'None'}")
+    
     # Load baseline data if specified
     if has_baseline:
         baseline_files = [feature_groups[g] for g in config["baseline_groups"]]
@@ -825,6 +1082,15 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
     exp_files = [feature_groups[g] for g in config["experimental_groups"]]
     exp_df = load_and_merge_features(exp_files, skip_every=config.get("skip_every"))
     print(f"Experimental data: {exp_df.shape}")
+
+    if "window_index" not in exp_df.columns:
+        raise ValueError("Expected 'window_index' in experimental data.")
+    exp_df["w_idx"] = exp_df["window_index"].astype(int)
+
+    GROUP_COLS = [c for c in ["participant", "trial_id", "trial", "session"] if c in exp_df.columns]
+    if not GROUP_COLS:
+        exp_df["__all__"] = 1
+        GROUP_COLS = ["__all__"]
     
     # Settings
     minutes = config["minutes"]
@@ -836,6 +1102,7 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
             "BalancedAcc": [],
             "F1": [],
             "Kappa": [],
+            "n_features": [],  # Track number of features selected per seed
         }
         for m in minutes
     }
@@ -846,10 +1113,31 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
             # Convert minutes to window index
             # With 60s windows and 50% overlap (30s step), window_index = minute * 2
             window_cutoff = minute * 2
-            
-            # Split experimental data by window index
-            mask_train = exp_df["window_index"] < window_cutoff
-            mask_test = exp_df["window_index"] >= window_cutoff
+
+            # build non-overlapping TEST via parity, then purge TRAIN neighbors
+            # TEST: all windows >= cutoff that match parity (avoid test-test overlap)
+            test_parity = window_cutoff % 2
+            mask_test = (exp_df["w_idx"] >= window_cutoff) & ((exp_df["w_idx"] % 2) == test_parity)
+
+            # TRAIN: all windows before cutoff
+            mask_train = exp_df["w_idx"] < window_cutoff
+
+            # If there are test windows, purge any overlapping TRAIN windows (neighbors ±1 in same group)
+            if mask_test.any():
+                test_keys = exp_df.loc[mask_test, GROUP_COLS + ["w_idx"]].copy()
+                nbr_minus = test_keys.copy(); nbr_minus["w_idx"] = nbr_minus["w_idx"] - 1
+                nbr_plus  = test_keys.copy();  nbr_plus["w_idx"]  = nbr_plus["w_idx"]  + 1
+                banned = pd.concat([test_keys, nbr_minus, nbr_plus], ignore_index=True)
+                banned = banned[banned["w_idx"] >= 0]
+
+                ban_idx = pd.MultiIndex.from_frame(banned[GROUP_COLS + ["w_idx"]])
+                train_frame = exp_df.loc[mask_train, GROUP_COLS + ["w_idx"]]
+                train_idx = pd.MultiIndex.from_frame(train_frame)
+                to_purge = train_idx.isin(ban_idx)
+                # clear overlapped train windows
+                purge_index = exp_df.loc[mask_train].index[to_purge]
+                if len(purge_index) > 0:
+                    mask_train.loc[purge_index] = False
             
             # Skip if no test data
             if mask_test.sum() == 0:
@@ -895,32 +1183,120 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
             X_train = X_train[common_features]
             X_test = X_test[common_features]
             
-            # Build and train pipeline
-            # Build classifier kwargs safely
-            rf_kwargs = dict(RF_PARAMS)         # don't mutate the global
-            rf_kwargs["random_state"] = seed
-            rf_kwargs.setdefault("n_jobs", -1)  # only set if not already present
-
-            # Pipeline
-            pipe = Pipeline([
-                ("scaler", StandardScaler()),
-                ("rf", RandomForestClassifier(**rf_kwargs)),
-            ])
-
+            # *** FEATURE SELECTION PER-SEED ***
+            if selection_method == "backward":
+                selected_features, _ = backward_elimination_rf(
+                    X_train, y_train, random_state=seed
+                )
+            elif selection_method == "forward":
+                # Forward selection not implemented
+                selected_features = list(X_train.columns)
+            elif selection_method is None:
+                selected_features = list(X_train.columns)
+            else:
+                raise ValueError(f"Unknown feature_selection method: '{selection_method}'")
             
-            pipe.fit(X_train, y_train)
-            y_pred = pipe.predict(X_test)
+            if not selected_features:
+                selected_features = list(X_train.columns)
+            
+            # Apply selected features
+            X_train = X_train[selected_features]
+            X_test = X_test[selected_features]
+            
+            # Apply normalization based on mode
+            if norm_mode == "standard":
+                # Standard: fit on train, transform both
+                scaler = StandardScaler()
+                X_train_scaled = scaler.fit_transform(X_train)
+                X_test_scaled = scaler.transform(X_test)
+            
+            elif norm_mode == "adaptive_per_trial":
+                # Per-trial adaptive: compute stats per (participant, condition) from train
+                # Apply those stats to test data for that trial
+                
+                # We need to keep track of participant and condition for both train and test
+                # Add them back temporarily
+                train_with_meta = exp_train[["participant", "condition"]].copy()
+                test_with_meta = exp_test[["participant", "condition"]].copy()
+                
+                # Initialize scaled arrays
+                X_train_scaled = np.zeros_like(X_train.values, dtype=float)
+                X_test_scaled = np.zeros_like(X_test.values, dtype=float)
+                
+                # Get unique (participant, condition) combinations in training data
+                train_groups = train_with_meta.groupby(["participant", "condition"]).groups
+                
+                for (participant, condition), train_indices in train_groups.items():
+                    # Get training data for this trial
+                    trial_train_mask = (train_with_meta["participant"] == participant) & \
+                                      (train_with_meta["condition"] == condition)
+                    trial_train_data = X_train.values[trial_train_mask]
+                    
+                    # Compute mean and std from training data
+                    train_mean = np.mean(trial_train_data, axis=0)
+                    train_std = np.std(trial_train_data, axis=0)
+                    train_std[train_std == 0] = 1.0  # Avoid division by zero
+                    
+                    # Transform training data for this trial
+                    X_train_scaled[trial_train_mask] = (trial_train_data - train_mean) / train_std
+                    
+                    # Find corresponding test data for this trial
+                    trial_test_mask = (test_with_meta["participant"] == participant) & \
+                                     (test_with_meta["condition"] == condition)
+                    
+                    if trial_test_mask.any():
+                        trial_test_data = X_test.values[trial_test_mask]
+                        # Apply training stats to test data
+                        X_test_scaled[trial_test_mask] = (trial_test_data - train_mean) / train_std
+                
+                # Handle any test trials that don't have corresponding training data
+                # (use global stats as fallback)
+                test_groups = test_with_meta.groupby(["participant", "condition"]).groups
+                for (participant, condition), test_indices in test_groups.items():
+                    if (participant, condition) not in train_groups:
+                        # Fallback to global training stats
+                        global_mean = np.mean(X_train.values, axis=0)
+                        global_std = np.std(X_train.values, axis=0)
+                        global_std[global_std == 0] = 1.0
+                        
+                        trial_test_mask = (test_with_meta["participant"] == participant) & \
+                                         (test_with_meta["condition"] == condition)
+                        trial_test_data = X_test.values[trial_test_mask]
+                        X_test_scaled[trial_test_mask] = (trial_test_data - global_mean) / global_std
+            
+            elif norm_mode == "adaptive_global":
+                # Global adaptive: compute stats from all training data
+                # Apply to all test data
+                train_mean = np.mean(X_train.values, axis=0)
+                train_std = np.std(X_train.values, axis=0)
+                train_std[train_std == 0] = 1.0  # Avoid division by zero
+                
+                # Transform both train and test using training stats
+                X_train_scaled = (X_train.values - train_mean) / train_std
+                X_test_scaled = (X_test.values - train_mean) / train_std
+            
+            # Build and train classifier
+            rf_kwargs = dict(RF_PARAMS)
+            rf_kwargs["random_state"] = seed
+            rf_kwargs.setdefault("n_jobs", -1)
+            
+            clf = RandomForestClassifier(**rf_kwargs)
+            clf.fit(X_train_scaled, y_train)
+            y_pred = clf.predict(X_test_scaled)
             
             # Compute metrics
             results[minute]["BalancedAcc"].append(balanced_accuracy_score(y_test, y_pred))
             results[minute]["F1"].append(f1_score(y_test, y_pred, labels=LABELS, average="weighted"))
             results[minute]["Kappa"].append(cohen_kappa_score(y_test, y_pred, labels=LABELS))
+            results[minute]["n_features"].append(len(selected_features))
     
     # Save results
     output_data = {
         "name": name,
         "config": config,
         "has_baseline": has_baseline,
+        "normalization_mode": norm_mode,
+        "feature_selection": selection_method,
         "minutes": minutes,
         "results": results,
         "n_seeds": n_seeds,
@@ -933,12 +1309,15 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
     print(f"✓ Completed: {name}")
     
     # Print summary
-    print("\nLearning Curve Summary (Balanced Accuracy):")
-    print(f"{'Minute':<10} {'Mean':<10} {'Std':<10} {'N':<10}")
-    print("-" * 40)
+    print(f"\nLearning Curve Summary (Balanced Accuracy) - {norm_mode}:")
+    print(f"{'Minute':<10} {'Mean':<10} {'Std':<10} {'N':<10} {'Features':<15}")
+    print("-" * 60)
     for minute in minutes:
         if results[minute]["BalancedAcc"]:
             mean_acc = np.mean(results[minute]["BalancedAcc"])
             std_acc = np.std(results[minute]["BalancedAcc"], ddof=1)
             n_samples = len(results[minute]["BalancedAcc"])
-            print(f"{minute:<10} {mean_acc*100:.2f}%    {std_acc*100:.2f}%    {n_samples:<10}")#!/usr/bin/env python3
+            mean_feats = np.mean(results[minute]["n_features"])
+            std_feats = np.std(results[minute]["n_features"], ddof=1)
+            print(f"{minute:<10} {mean_acc*100:.2f}%    {std_acc*100:.2f}%    {n_samples:<10} "
+                  f"{mean_feats:.1f} ± {std_feats:.1f}")

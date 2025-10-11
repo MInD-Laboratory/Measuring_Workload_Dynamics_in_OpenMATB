@@ -1,0 +1,84 @@
+{
+  "name": "linear_none_participant",
+  "config": {
+    "n_seeds": 20,
+    "feature_selection": "backward",
+    "selection_level": "metric",
+    "selection_stopping": "drop",
+    "use_pca": false,
+    "pca_variance": 0.95,
+    "write_cm": true,
+    "name": "linear_none_participant",
+    "feature_groups": [
+      "none_linear_exp"
+    ],
+    "split_strategy": "participant"
+  },
+  "metrics": {
+    "test_acc_mean": 0.4057818123081655,
+    "test_acc_std": 0.019484166248331103,
+    "test_bal_acc_mean": 0.4056819428558559,
+    "test_bal_acc_std": 0.01962600799056356,
+    "test_f1_mean": 0.3992188198892305,
+    "test_f1_std": 0.019419736482640046,
+    "test_kappa_mean": 0.10877752402932137,
+    "test_kappa_std": 0.029179296117057354
+  },
+  "confusion_matrix": [
+    [
+      39.362914862914856,
+      29.274170274170274,
+      31.36291486291487
+    ],
+    [
+      31.19586452195147,
+      31.460715612889523,
+      37.34341986515899
+    ],
+    [
+      22.047619047619047,
+      27.071428571428573,
+      50.88095238095239
+    ]
+  ],
+  "selected_features": [
+    "head_rotation_rad_min",
+    "head_rotation_rad_max",
+    "head_rotation_rad_rms",
+    "head_rotation_rad_mean",
+    "blink_aperture_min",
+    "blink_aperture_max",
+    "blink_aperture_rms",
+    "blink_aperture_mean",
+    "mouth_aperture_min",
+    "mouth_aperture_max",
+    "mouth_aperture_rms",
+    "mouth_aperture_mean",
+    "pupil_dx_min",
+    "pupil_dx_max",
+    "pupil_dx_rms",
+    "pupil_dx_mean",
+    "pupil_dy_min",
+    "pupil_dy_max",
+    "pupil_dy_rms",
+    "pupil_dy_mean",
+    "pupil_metric_min",
+    "pupil_metric_max",
+    "pupil_metric_rms",
+    "pupil_metric_mean",
+    "center_face_magnitude_min",
+    "center_face_magnitude_max",
+    "center_face_magnitude_mean",
+    "center_face_x_min",
+    "center_face_x_max",
+    "center_face_x_rms",
+    "center_face_x_mean",
+    "center_face_y_min",
+    "center_face_y_max",
+    "center_face_y_rms",
+    "center_face_y_mean"
+  ],
+  "n_features": 35,
+  "n_seeds": 20,
+  "timestamp": "2025-10-10T00:48:09.066282"
+}

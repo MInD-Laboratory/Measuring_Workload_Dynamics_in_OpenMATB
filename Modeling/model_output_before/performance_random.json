@@ -1,0 +1,54 @@
+{
+  "name": "performance_random",
+  "config": {
+    "n_seeds": 20,
+    "feature_selection": "backward",
+    "selection_level": "metric",
+    "selection_stopping": "drop",
+    "use_pca": false,
+    "pca_variance": 0.95,
+    "write_cm": true,
+    "name": "performance_random",
+    "feature_groups": [
+      "performance_exp"
+    ],
+    "split_strategy": "random"
+  },
+  "metrics": {
+    "test_acc_mean": 0.5502325581395349,
+    "test_acc_std": 0.01693814554670155,
+    "test_bal_acc_mean": 0.5495424708746306,
+    "test_bal_acc_std": 0.016880405857425385,
+    "test_f1_mean": 0.5457949706940752,
+    "test_f1_std": 0.015904526899900896,
+    "test_kappa_mean": 0.3251953887759115,
+    "test_kappa_std": 0.025366833098538988
+  },
+  "confusion_matrix": [
+    [
+      54.21296296296297,
+      30.601851851851855,
+      15.185185185185187
+    ],
+    [
+      32.887323943661976,
+      40.117370892018776,
+      26.99530516431925
+    ],
+    [
+      9.930555555555555,
+      19.537037037037035,
+      70.5324074074074
+    ]
+  ],
+  "selected_features": [
+    "track_point_accuracy",
+    "resman_point_accuracy",
+    "sysmon_point_accuracy",
+    "mean_sysmon_response_time",
+    "mean_comms_response_time"
+  ],
+  "n_features": 5,
+  "n_seeds": 20,
+  "timestamp": "2025-10-10T00:50:23.684195"
+}
