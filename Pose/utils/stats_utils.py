@@ -55,10 +55,20 @@ def split_metric_name(name: str) -> Tuple[str, str]:
     return (pretty,"") if len(parts) < 2 else (" ".join(parts[:-1]), parts[-1])
 
 def fmt(beta: float | None, p: float | None) -> Tuple[str,str]:
-    b = "--" if beta is None or (isinstance(beta,float) and not np.isfinite(beta)) else f"$\\beta = {beta:.3f}$"
+    # beta now holds SMD (Cohen's d / Hedges-like)
+    if beta is None or (isinstance(beta, float) and not np.isfinite(beta)):
+        b = "--"
+    else:
+        b = (f"$d = {beta:.2f}$" if abs(beta) >= 1e-3 else f"$d = {beta:.3g}$")
     if p is None or (isinstance(p,float) and not np.isfinite(p)):
         return b, "--"
     return b, (r"$p < .001$" if p < 0.001 else f"$p = {p:.3f}$")
+
+# def fmt(beta: float | None, p: float | None) -> Tuple[str,str]:
+#     b = "--" if beta is None or (isinstance(beta,float) and not np.isfinite(beta)) else f"$\\beta = {beta:.3f}$"
+#     if p is None or (isinstance(p,float) and not np.isfinite(p)):
+#         return b, "--"
+#     return b, (r"$p < .001$" if p < 0.001 else f"$p = {p:.3f}$")
 
 # -----------------------
 # rpy2 wrapper: lmer + emmeans
@@ -78,10 +88,10 @@ def run_rpy2_lmer(df: pd.DataFrame, dv: str, adjust: str = "tukey"):
     """
     Fit: dv ~ condition + widx_c + (1 + widx_c || participant)
     Returns:
-      pairs_est (lo,hi): estimate (hi - lo)
-      pairs_p   (lo,hi): p-value
-      means: emmeans per condition
-      cis: (lower, upper) per condition (95%)
+      pairs_est: dict[(lo,hi)->float]  standardized mean differences (hi - lo)
+      pairs_p:   dict[(lo,hi)->float]  p-values from emmeans::pairs(emm)
+      means:     dict[cond->float]     emmeans (raw units)
+      cis:       dict[cond->(lo,hi)]   95% CI for emmeans (raw units)
     """
     # ---- prep pandas data ----
     need = ["participant", "condition", "window_index", dv]
@@ -91,16 +101,16 @@ def run_rpy2_lmer(df: pd.DataFrame, dv: str, adjust: str = "tukey"):
         d["condition"].astype(str).str.strip().str.upper(),
         categories=["L","M","H"], ordered=True
     )
-    # center/scale index
     w = pd.to_numeric(d["window_index"], errors="coerce")
     w = (w - np.nanmean(w)) / (np.nanstd(w) if np.nanstd(w) != 0 else 1.0)
     d["widx_c"] = w.fillna(0.0)
 
-    # ---- R packages / data bridge ----
+    # ---- R bridge ----
     from rpy2.robjects.packages import importr
     import rpy2.robjects as ro
     from rpy2.robjects.conversion import localconverter
     from rpy2.robjects import pandas2ri
+
     lme4     = importr("lme4")
     lmerTest = importr("lmerTest")
     emmeans  = importr("emmeans")
@@ -113,30 +123,43 @@ def run_rpy2_lmer(df: pd.DataFrame, dv: str, adjust: str = "tukey"):
     ro.r('dat$condition   <- factor(dat$condition, levels=c("L","M","H"), ordered=TRUE)')
     ro.r('dat$widx_c      <- as.numeric(dat$widx_c)')
 
-    # robust control + random slope (uncorrelated) for stability
-    
+    # ---- fit with random slopes; fallback to intercept-only if singular ----
     ro.r('ctrl <- lme4::lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e6))')
-    ro.r('fit  <- lmerTest::lmer(dv ~ condition + widx_c + (1 + widx_c || participant), data=dat, control=ctrl)')
-    ro.r('emm  <- emmeans::emmeans(fit, ~ condition)')
+    ro.r('fit_try <- suppressMessages(suppressWarnings('
+         '  lmerTest::lmer(dv ~ condition + widx_c + (1 + widx_c || participant), data=dat, control=ctrl)))')
+    ro.r('is_sing <- lme4::isSingular(fit_try, tol=1e-6)')
+    ro.r('bad_vc  <- any(unlist(lme4::VarCorr(fit_try)) < 1e-10, na.rm=TRUE)')
+    ro.r('fit <- if (is_sing || bad_vc) { '
+         '  suppressMessages(suppressWarnings('
+         '    lmerTest::lmer(dv ~ condition + widx_c + (1 | participant), data=dat, control=ctrl))) '
+         '} else { fit_try }')
 
-    # pull emmeans, CIs, and pairwise
-    emm_df_r = ro.r("as.data.frame(emm)")
-    # try confint; fallback to SE
+    # ---- emmeans + pairwise + standardized effect sizes ----
+    ro.r('emm <- emmeans::emmeans(fit, ~ condition)')
+    ro.r(f'pw  <- pairs(emm, adjust = "{adjust}")')
+    ro.r('pw_es <- tryCatch(emmeans::eff_size(pw, sigma = sigma(fit), edf = df.residual(fit)), error=function(e) NULL)')
+    ro.r('sig <- as.numeric(sigma(fit))')  # model residual sigma for fallback
+
+    # pull frames
+    emm_df_r  = ro.r("as.data.frame(emm)")
     try:
         ci_df_r = ro.r("as.data.frame(confint(emm, level=0.95))")
     except Exception:
         ci_df_r = None
-    pwc_df_r = ro.r(f'as.data.frame(pairs(emm, adjust = "{adjust}"))')
+    pwc_df_r  = ro.r("as.data.frame(pw)")
+    pwes_df_r = ro.r("if (is.null(pw_es)) data.frame() else as.data.frame(pw_es)")
+    sig_r     = float(ro.r("sig")[0])
 
     with localconverter(ro.default_converter + pandas2ri.converter):
-        emm_pd = ro.conversion.rpy2py(emm_df_r)
-        pwc_pd = ro.conversion.rpy2py(pwc_df_r)
-        ci_pd  = ro.conversion.rpy2py(ci_df_r) if ci_df_r is not None else pd.DataFrame()
+        emm_pd  = ro.conversion.rpy2py(emm_df_r)
+        pwc_pd  = ro.conversion.rpy2py(pwc_df_r)
+        pwes_pd = ro.conversion.rpy2py(pwes_df_r)
+        ci_pd   = ro.conversion.rpy2py(ci_df_r) if ci_df_r is not None else pd.DataFrame()
 
-    # means
+    # ---- emmeans (raw units) ----
     means = {str(r["condition"]): float(r["emmean"]) for _, r in emm_pd.iterrows()}
 
-    # CIs
+    # ---- CIs (raw units) ----
     def _robust_ci_cols(ci_pd: pd.DataFrame):
         cand = list(ci_pd.columns)
         lower = next((c for c in cand if c.lower().startswith("lower")), None)
@@ -161,153 +184,59 @@ def run_rpy2_lmer(df: pd.DataFrame, dv: str, adjust: str = "tukey"):
         else:
             for k in means: cis[k] = (float("nan"), float("nan"))
 
-    # pairwise estimates and p-values, normalized to (lo,hi) order
+    # ---- pairwise SMDs + p-values ----
+    # 1) Build p map from pairs(...)
     pcol = "p.value" if "p.value" in pwc_pd.columns else next((c for c in pwc_pd.columns if c.lower().startswith("p")), None)
-    pairs_est, pairs_p = {}, {}
     order = {"L":0, "M":1, "H":2}
+    pairs_p = {}
+
+    # 2) Robust SMD column detection on pw_es
+    smd_col = None
+    for candidate in ["effect.size", "SMD", "g", "d", "es", "ES"]:
+        if candidate in pwes_pd.columns:
+            smd_col = candidate
+            break
+
+    # 3) Build maps for SMD (preferred) and raw estimates (fallback)
+    smd_map = {}
+    if smd_col:
+        for _, r in pwes_pd.iterrows():
+            contrast = str(r.get("contrast","")).replace("–","-").replace(" - ","-")
+            smd_map[contrast] = float(r.get(smd_col, np.nan))
+
+    est_map = {}
+    if "estimate" in pwc_pd.columns:
+        for _, r in pwc_pd.iterrows():
+            contrast = str(r.get("contrast","")).replace("–","-").replace(" - ","-")
+            est_map[contrast] = float(r.get("estimate", np.nan))
+
+    # 4) Normalize to (lo,hi) with sign as (hi - lo)
+    pairs_est = {}
     for _, r in pwc_pd.iterrows():
         contrast = str(r.get("contrast","")).replace("–","-").replace(" - ","-")
         parts = [p.strip() for p in contrast.split("-")]
-        if len(parts) != 2: 
+        if len(parts) != 2:
             continue
         a, b = parts[0], parts[1]
         if a not in order or b not in order or a == b:
             continue
-        est_lr = float(r["estimate"]) if "estimate" in r and pd.notnull(r["estimate"]) else float("nan")
-        pv     = float(r[pcol]) if (pcol and pd.notnull(r[pcol])) else float("nan")
+
+        # get p
+        pv = float(r[pcol]) if (pcol and pd.notnull(r[pcol])) else float("nan")
+
+        # preferred: SMD from eff_size; fallback: estimate/sigma
+        est_lr = smd_map.get(contrast, np.nan)
+        if not np.isfinite(est_lr) and np.isfinite(sig_r) and sig_r > 0 and contrast in est_map:
+            est_lr = est_map[contrast] / sig_r
+
         lo, hi = (a, b) if order[a] < order[b] else (b, a)
         est_hi_minus_lo = est_lr if (a == hi and b == lo) else -est_lr
+
         pairs_est[(lo, hi)] = est_hi_minus_lo
         pairs_p[(lo,  hi)]  = pv
 
     return pairs_est, pairs_p, means, cis
 
-
-
-# def run_rpy2_lmer(df: pd.DataFrame, dv: str, adjust: str = "none") -> Tuple[Dict[Tuple[str,str], float], Dict[Tuple[str,str], float], Dict[str,float], Dict[str,Tuple[float,float]]]:
-#     """
-#     Fit: dv ~ condition + window_index + (1 | participant)
-#     Returns:
-#       pairs_est (lo,hi): estimate (hi - lo)
-#       pairs_p   (lo,hi): p-value
-#       means: emmeans per condition
-#       cis: (lower, upper) per condition (approx if confint fails)
-#     """
-#     if not _HAVE_RPY2:
-#         raise ImportError("rpy2 not available. Install rpy2 and R packages lmerTest/emmeans.")
-
-#     # local imports
-#     from rpy2.robjects.packages import importr
-#     import rpy2.robjects as robjects
-#     from rpy2.robjects.conversion import localconverter
-#     from rpy2.robjects import pandas2ri
-#     robjects.r('emmeans::emm_options(lmer.df = "satterthwaite", lmerTest.limit = 4000)')
-
-#     # Prepare dataframe: ensure needed cols exist, set defaults if missing
-#     d = df.copy()
-#     if "participant_id" in d.columns and "participant" not in d.columns:
-#         d = d.rename(columns={"participant_id":"participant"})
-#     if "participant" not in d.columns:
-#         raise ValueError("Data must contain 'participant' column")
-#     # ensure window_index exists
-#     if "window_index" not in d.columns:
-#         d["window_index"] = 0
-#     # condition
-#     if "condition" not in d.columns:
-#         raise ValueError("Data must contain 'condition' column")
-#     # keep only necessary cols
-#     cols = ["participant","condition","window_index", dv]
-#     dat = d[cols].dropna().copy()
-#     dat = dat.rename(columns={dv: "dv"})
-#     dat["participant"] = dat["participant"].astype(str)
-#     dat["condition"] = pd.Categorical(dat["condition"].astype(str).str.strip().str.upper(), categories=COND_ORDER, ordered=True)
-
-#     # center/scale window_index
-#     w = pd.to_numeric(dat["window_index"], errors="coerce")
-#     if w.isna().all():
-#         dat["widx_c"] = 0.0
-#     else:
-#         dat["widx_c"] = (w - np.nanmean(w)) / (np.nanstd(w) if np.nanstd(w) != 0 else 1.0)
-
-#     # push to R using localconverter
-#     with localconverter(robjects.default_converter + pandas2ri.converter):
-#         robjects.globalenv["dat"] = robjects.conversion.py2rpy(dat)
-
-#     # load packages and fit
-#     robjects.r('suppressPackageStartupMessages(library(lme4))')
-#     robjects.r('suppressPackageStartupMessages(library(lmerTest))')
-#     robjects.r('suppressPackageStartupMessages(library(emmeans))')
-#     # robust control
-#     robjects.r('ctrl <- lme4::lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=200000))')
-
-#     # formula uses window_index (we already created widx_c but emmeans on condition unaffected)
-#     rcode = """
-#         dat$participant <- factor(dat$participant)
-#         dat$condition <- factor(dat$condition, levels = c("L","M","H"), ordered = TRUE)
-#         dat$window_index <- as.numeric(dat$window_index)
-#         fit <- lmerTest::lmer(dv ~ condition + window_index + (1 | participant), data = dat, control = ctrl)
-#         emm <- emmeans::emmeans(fit, specs = ~ condition)
-#     """
-#     robjects.r(rcode)
-
-#     # pull emmeans, confint, pairs
-#     emm_df_r = robjects.r("as.data.frame(emm)")
-#     try:
-#         ci_df_r = robjects.r("as.data.frame(confint(emm, level = 0.95))")
-#     except Exception:
-#         ci_df_r = None
-#     pwc_df_r = robjects.r(f"as.data.frame(pairs(emm, adjust = '{adjust}'))")
-
-#     with localconverter(robjects.default_converter + pandas2ri.converter):
-#         emm_pd = robjects.conversion.rpy2py(emm_df_r)
-#         pwc_pd = robjects.conversion.rpy2py(pwc_df_r)
-#         ci_pd = robjects.conversion.rpy2py(ci_df_r) if ci_df_r is not None else pd.DataFrame()
-
-#     # means
-#     means = {str(r["condition"]): float(r["emmean"]) for _, r in emm_pd.iterrows()}
-
-#     # cis: robust detection
-#     cis = {}
-#     if not ci_pd.empty and "condition" in ci_pd.columns:
-#         lower_col, upper_col = _robust_ci_cols(ci_pd)
-#         if lower_col and upper_col:
-#             for _, r in ci_pd.iterrows():
-#                 cis[str(r["condition"])] = (float(r[lower_col]), float(r[upper_col]))
-#     else:
-#         # fallback using SE from emm_pd
-#         se_col = next((c for c in emm_pd.columns if c.lower() in ("se","stderr","std.error")), None)
-#         if se_col:
-#             for _, r in emm_pd.iterrows():
-#                 cond = str(r["condition"])
-#                 mean = float(r["emmean"]); se = float(r[se_col])
-#                 cis[cond] = (mean - 1.96*se, mean + 1.96*se)
-#         else:
-#             for cond in means.keys():
-#                 cis[cond] = (float("nan"), float("nan"))
-
-#     # pairwise p and estimates
-#     pcol = "p.value" if "p.value" in pwc_pd.columns else next((c for c in pwc_pd.columns if c.lower().startswith("p")), None)
-#     pairs_est: Dict[Tuple[str,str], float] = {}
-#     pairs_p: Dict[Tuple[str,str], float] = {}
-#     order = {k: i for i,k in enumerate(COND_ORDER)}
-#     for _, r in pwc_pd.iterrows():
-#         contrast = str(r.get("contrast", ""))
-#         contrast = contrast.replace("–","-").replace(" - ","-")
-#         parts = [p.strip() for p in contrast.split("-")]
-#         if len(parts) != 2:
-#             continue
-#         left = next((lvl for lvl in COND_ORDER if lvl in parts[0]), None)
-#         right = next((lvl for lvl in COND_ORDER if lvl in parts[1]), None)
-#         if left is None or right is None or left == right:
-#             continue
-#         est_lr = float(r["estimate"]) if "estimate" in r and pd.notnull(r["estimate"]) else np.nan
-#         pv = float(r[pcol]) if (pcol and pd.notnull(r[pcol])) else np.nan
-#         lo, hi = (left, right) if order[left] < order[right] else (right, left)
-#         est_hi_minus_lo = est_lr if (left == hi and right == lo) else -est_lr
-#         pairs_est[(lo,hi)] = est_hi_minus_lo
-#         pairs_p[(lo,hi)] = pv
-
-#     return pairs_est, pairs_p, means, cis
 
 # --------------------------
 # plotting helper
@@ -375,6 +304,9 @@ def load_session_csvs(files: List[Path]) -> pd.DataFrame:
 # table builder + plots (main)
 # --------------------------
 def build_table_with_emmeans(df: pd.DataFrame, out_tex: str | Path, figs_dir: str | Path):
+    from collections import defaultdict
+    import matplotlib.pyplot as plt
+
     out_tex = Path(out_tex)
     figs_dir = Path(figs_dir)
     figs_dir.mkdir(parents=True, exist_ok=True)
@@ -387,23 +319,54 @@ def build_table_with_emmeans(df: pd.DataFrame, out_tex: str | Path, figs_dir: st
     if "window_index" not in df.columns:
         df["window_index"] = 0
 
-    metric_cols = [c for c in df.columns if c not in NON_METRIC_COLS and pd.api.types.is_numeric_dtype(df[c])]
+    for c in df.columns:
+        if c not in NON_METRIC_COLS:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    metric_cols = [c for c in df.columns
+                   if c not in NON_METRIC_COLS
+                   and pd.api.types.is_numeric_dtype(df[c])
+                   and df[c].notna().any()]
+
+    # ---- helper: bucket by kinematics (displacement/velocity/acceleration) ----
+    def bucket_kind(metric_name: str, metric_type_label: str) -> str:
+        mn = metric_name.lower()
+        mt = (metric_type_label or "").lower()
+        # Prefer column-name cues; fall back to human label
+        if ("_vel" in mn) or (" velocity" in mt) or (mt == "velocity"):
+            return "vel"
+        if ("_acc" in mn) or (" acceleration" in mt) or (mt == "acceleration"):
+            return "acc"
+        # everything else is displacement/RMS/etc.
+        return "disp"
+
+    # storage: region -> list of dict rows (we keep kind to split later)
     grouped = defaultdict(list)
+
     modeled = skipped = 0
-
     for metric in metric_cols:
-        ser = df[metric].dropna()
-        if ser.empty:
-            skipped += 1; continue
-        if not {"L","M","H"}.issubset(set(df.dropna(subset=[metric])["condition"].unique())):
-            skipped += 1; continue
+        df[metric] = pd.to_numeric(df[metric], errors="coerce")
+        ser = df[metric]
+        n_total = ser.shape[0]; n_na = ser.isna().sum()
+        if n_na == n_total:
+            skipped += 1
+            print(f"[skip] {metric}: all NA ({n_na}/{n_total})")
+            continue
 
-        tmp = df[["participant","condition","window_index",metric]].dropna().rename(columns={metric:"dv"})
+        sub = df.loc[ser.notna(), ["condition","participant","window_index",metric]]
+        conds = sorted(sub["condition"].unique().tolist())
+        n_by_cond = sub.groupby("condition")[metric].size().to_dict()
+        if not {"L","M","H"}.issubset(set(conds)):
+            skipped += 1
+            print(f"[skip] {metric}: missing condition(s). have={conds}, counts={n_by_cond}")
+            continue
+
+        tmp = sub.rename(columns={metric:"dv"})
         try:
             pairs_est, pairs_p, means, cis = run_rpy2_lmer(tmp, "dv", adjust="none")
         except Exception as e:
-            print(f"[WARN] model failed for {metric}: {e}")
             skipped += 1
+            print(f"[skip] {metric}: model error -> {e}")
             continue
 
         b_m = pairs_est.get(("L","M"), np.nan); p_m = pairs_p.get(("L","M"), np.nan)
@@ -415,10 +378,17 @@ def build_table_with_emmeans(df: pd.DataFrame, out_tex: str | Path, figs_dir: st
         Bhm, Phm = fmt(b_hm, p_hm)
 
         region, metric_type = split_metric_name(metric)
-        grouped[region].append((metric_type, Bm, Pm, Bh, Ph, Bhm, Phm))
+        kind = bucket_kind(metric, metric_type)   # NEW: tag as disp/vel/acc
+        grouped[region].append({
+            "metric_type": metric_type,
+            "kind": kind,
+            "Bm": Bm, "Pm": Pm,
+            "Bh": Bh, "Ph": Ph,
+            "Bhm": Bhm, "Phm": Phm,
+        })
         modeled += 1
 
-        # plot per metric
+        # plot per metric (unchanged)
         conds = ["L","M","H"]
         mean_vals = [means.get(c, float("nan")) for c in conds]
         sems = []
@@ -436,69 +406,155 @@ def build_table_with_emmeans(df: pd.DataFrame, out_tex: str | Path, figs_dir: st
         fig.savefig(out_svg, bbox_inches="tight")
         plt.close(fig)
 
-    # write latex table
-    lines = [
-        r"\begin{tabular}{llcc|cc|cc}",
-        r"\toprule",
-        r"Region & Metric & $\beta_{\text{M}}$ & $p_{\text{M}}$ & $\beta_{\text{H}}$ & $p_{\text{H}}$ & $\beta_{\text{H--M}}$ & $p_{\text{H--M}}$ \\",
-        r"\midrule"
-    ]
-    for region in sorted(grouped.keys()):
-        rows = grouped[region]
-        rows.sort(key=lambda x: DESIRED_ORDER.index(x[0]) if x[0] in DESIRED_ORDER else len(DESIRED_ORDER))
-        first = True
-        for (metric_type, Bm, Pm, Bh, Ph, Bhm, Phm) in rows:
-            region_label = f"\\multirow{{{len(rows)}}}{{*}}{{{region}}}" if first else ""
-            lines.append(f"{region_label} & {metric_type} & {Bm} & {Pm} & {Bh} & {Ph} & {Bhm} & {Phm} \\\\")
-            first = False
-        lines.append(r"\midrule")
-    lines += [r"\bottomrule", r"\end{tabular}"]
-    out_tex.write_text("\n".join(lines), encoding="utf-8")
-    print(f"[OK] wrote {out_tex} | modeled={modeled}, skipped={skipped}")
+    # ---- helper to write ONE latex table given a bucket (disp/vel/acc) ----
+    def write_table_for_bucket(bucket: str, suffix: str):
+        lines = [
+            r"\begin{tabular}{llcc|cc|cc}",
+            r"\toprule",
+            r"Region & Metric & $d_{\text{M--L}}$ & $p_{\text{M--L}}$ & $d_{\text{H--L}}$ & $p_{\text{H--L}}$ & $d_{\text{H--M}}$ & $p_{\text{H--M}}$ \\",
+            r"\midrule"
+        ]
+        wrote_any = False
+        for region in sorted(grouped.keys()):
+            # filter rows for this bucket
+            rows_all = grouped[region]
+            rows = [r for r in rows_all if r["kind"] == bucket]
+            if not rows:
+                continue
+            # order within region
+            rows.sort(key=lambda x: DESIRED_ORDER.index(x["metric_type"]) if x["metric_type"] in DESIRED_ORDER else len(DESIRED_ORDER))
+            first = True
+            for r in rows:
+                region_label = f"\\multirow{{{len(rows)}}}{{*}}{{{region}}}" if first else ""
+                lines.append(f"{region_label} & {r['metric_type']} & {r['Bm']} & {r['Pm']} & {r['Bh']} & {r['Ph']} & {r['Bhm']} & {r['Phm']} \\\\")
+                first = False
+            lines.append(r"\midrule")
+            wrote_any = True
+
+        lines += [r"\bottomrule", r"\end{tabular}"]
+
+        # only write a file if we have rows for this bucket
+        if wrote_any:
+            path = out_tex.with_name(out_tex.stem + suffix + out_tex.suffix)
+            path.write_text("\n".join(lines), encoding="utf-8")
+            print(f"[OK] wrote {path}")
+        else:
+            print(f"[note] no rows for bucket={bucket}; no table written.")
+
+    # write 3 separate tables
+    write_table_for_bucket("disp", "_disp")
+    write_table_for_bucket("vel",  "_vel")
+    write_table_for_bucket("acc",  "_acc")
+
+    print(f"[DONE] modeled={modeled}, skipped={skipped}")
     return modeled, skipped
-
-
 
 
 def pretty_metric(name: str) -> str:
     """Format metric names for display."""
     return name.replace("_", " ").title()
 
-def run_stats_by_column(df, metrics):
+
+def run_stats_by_column(
+    df: pd.DataFrame,
+    metrics,
+    *,
+    adjust: str = "tukey",
+    min_per_condition: int = 1,
+    verbose: bool = True
+):
     """
-    Run mixed models for each column (data type) and metric.
-    Returns nested dict: results[column][metric] = (ests, pvals, means, cis)
+    For each data 'column' and each metric, fit:
+        dv ~ condition + widx_c + (1 + widx_c || participant)
+    with automatic fallback to (1|participant), emmeans, pairwise tests,
+    and standardized effect sizes (via run_rpy2_lmer).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain: ["participant","condition","window_index","column", <metrics...>]
+    metrics : Iterable[str]
+        Column names to use as DVs.
+    adjust : str
+        p-value adjustment method passed to emmeans::pairs (default "tukey").
+    min_per_condition : int
+        Minimum rows per condition to attempt a model (after NA drop).
+    verbose : bool
+        Print progress.
+
+    Returns
+    -------
+    results : dict
+        Nested dict: results[column][metric] = (pairs_est, pairs_p, means, cis)
+          - pairs_est : dict[(lo,hi)->float] standardized mean differences (hi - lo)
+          - pairs_p   : dict[(lo,hi)->float] p-values
+          - means     : dict[cond->float]     emmeans (raw units)
+          - cis       : dict[cond->(lo,hi)]   95% CI for emmeans (raw units)
     """
     results = defaultdict(dict)
-    
-    for col_name in sorted(df["column"].dropna().unique()):
-        print(f"\nAnalyzing: {col_name}")
+
+    # sanity: ensure required columns exist
+    required = {"participant", "condition", "window_index", "column"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required column(s): {sorted(missing)}")
+
+    # iterate deterministically by column label
+    for col_name in sorted(pd.Series(df["column"]).dropna().unique().tolist()):
+        if verbose:
+            print(f"\nAnalyzing: {col_name}")
         dsub = df[df["column"] == col_name].copy()
-        
-        # Need at least 2 conditions for contrasts
-        n_conds = len(set(dsub["condition"].dropna().unique()))
-        if n_conds < 2:
-            print(f"  Skipping (only {n_conds} condition(s))")
+
+        # must have at least 2 conditions in this slice (after cleaning)
+        conds_raw = pd.Series(dsub["condition"]).dropna().astype(str)
+        if conds_raw.empty:
+            if verbose: print("  Skipping (no condition values)")
             continue
-        
+
+        # iterate metrics
         for metric in metrics:
             if metric not in dsub.columns:
+                if verbose: print(f"  – {metric}: not in dataframe; skipping")
                 continue
-                
-            tmp = dsub[["participant", "condition", "window_index", metric]].dropna()
-            if tmp.empty or len(set(tmp["condition"].unique())) < 2:
-                continue
-            
-            try:
-                ests, pvals, means, cis = run_rpy2_lmer(
-                    tmp.rename(columns={metric: "dv"}),
-                    "dv",
-                    adjust="none"
-                )
-                results[col_name][metric] = (ests, pvals, means, cis)
-                print(f"  ✓ {metric}")
-            except Exception as e:
-                print(f"  ✗ {metric}: {e}")
-    
-    return results
 
+            # build minimal frame and drop NAs
+            need = ["participant", "condition", "window_index", metric]
+            tmp = dsub[need].dropna().copy()
+            if tmp.empty:
+                if verbose: print(f"  – {metric}: empty after NA drop; skipping")
+                continue
+
+            # normalize condition coding early (mirrors run_rpy2_lmer)
+            tmp["condition"] = (
+                tmp["condition"].astype(str).str.strip().str.upper()
+            )
+
+            # keep only conditions that have at least min_per_condition rows
+            counts = tmp.groupby("condition", dropna=True).size()
+            ok_levels = counts[counts >= max(1, int(min_per_condition))].index.tolist()
+            tmp = tmp[tmp["condition"].isin(ok_levels)]
+
+            uniq_conds = sorted(tmp["condition"].unique().tolist())
+            if len(uniq_conds) < 2:
+                if verbose:
+                    n_conds = len(uniq_conds)
+                    print(f"  Skipping {metric} (only {n_conds} usable condition(s) after filtering)")
+                continue
+
+            try:
+                # delegate all modeling/details to run_rpy2_lmer
+                pairs_est, pairs_p, means, cis = run_rpy2_lmer(
+                    tmp.rename(columns={metric: "dv"}),
+                    dv="dv",
+                    adjust=adjust
+                )
+                results[col_name][metric] = (pairs_est, pairs_p, means, cis)
+                if verbose:
+                    # quick, informative summary
+                    have_es = ", ".join([f"{a}>{b}" for (a,b) in sorted(pairs_est)])
+                    print(f"  ✓ {metric} — contrasts: [{have_es}]")
+            except Exception as e:
+                if verbose:
+                    print(f"  ✗ {metric}: {type(e).__name__}: {e}")
+
+    return results
