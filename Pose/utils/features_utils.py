@@ -4,6 +4,7 @@ import math
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import re
 
 from .config import CFG, SCALE_BY_INTEROCULAR
 from .preprocessing_utils import detect_conf_prefix_case_insensitive, relevant_indices, find_real_colname
@@ -341,7 +342,7 @@ def original_features_for_file(df_norm: pd.DataFrame) -> Dict[str, np.ndarray]:
     }
 
 # --------- Per-frame derivatives --------------------------------------------
-def add_perframe_derivatives(df: pd.DataFrame) -> pd.DataFrame:
+def add_perframe_derivatives(df: pd.DataFrame, fps: float = 1.0) -> pd.DataFrame:
     """
     Append *_vel and *_acc columns (via np.gradient) for every numeric column.
     Keeps everything else untouched. No fps scaling (matches your earlier gradient use).
@@ -349,9 +350,11 @@ def add_perframe_derivatives(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     num_cols = out.select_dtypes(include=[np.number]).columns
     for col in num_cols:
-        s = out[col].to_numpy()
-        v = np.gradient(s)
-        a = np.gradient(v)
+        if col in {"participant", "condition", "frame", "interocular"}:
+            continue
+        s = out[col].to_numpy(float)
+        v = np.gradient(s) * fps          # per second
+        a = np.gradient(v) * fps          # per second^2
         out[f"{col}_vel"] = v
         out[f"{col}_acc"] = a
     return out
@@ -376,6 +379,7 @@ def compute_linear_from_perframe_dir(per_frame_dir: Path,
 
     for pf in files:
         df = pd.read_csv(pf)
+        df = add_perframe_derivatives(df, fps=60)
 
         pid = str(df["participant"].iloc[0]) if "participant" in df.columns and len(df) else "NA"
         cond = str(df["condition"].iloc[0]) if "condition" in df.columns and len(df) else "NA"
@@ -387,9 +391,14 @@ def compute_linear_from_perframe_dir(per_frame_dir: Path,
         # Optional scale for distance-like metrics only (values and their *_vel/_acc kept as-is)
         io = df["interocular"].to_numpy(float) if "interocular" in df.columns else np.full(len(df), np.nan)
         scaled: Dict[str, np.ndarray] = {}
+
         for k in metric_cols:
-            arr = df[k].to_numpy(float)
-            if scale_by_interocular and is_distance_like_metric(k) and np.isfinite(io).any():
+            arr = pd.to_numeric(df[k], errors="coerce").to_numpy(float)
+
+            base = re.sub(r"_(vel|acc)$", "", k)
+            dist_like = is_distance_like_metric(base)
+
+            if scale_by_interocular and dist_like and np.isfinite(io).any():
                 with np.errstate(divide='ignore', invalid='ignore'):
                     arr2 = arr / io
                     bad = ~np.isfinite(arr2) | (io < 1e-6)
