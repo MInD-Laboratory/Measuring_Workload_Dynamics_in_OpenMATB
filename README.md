@@ -29,7 +29,7 @@ Linear and nonlinear analyses were applied to the pose data. Nonlinear dynamics 
 ### Clone (with submodules)
 
 ```bash
-git clone https://github.com/MInD-Laboratory/matb_rqa_workload
+git clone https://github.com/MInD-Laboratory/Measuring_Workload_Dynamics_in_OpenMATB.git
 cd matb_rqa_workload
 git submodule update --init --recursive
 ```
