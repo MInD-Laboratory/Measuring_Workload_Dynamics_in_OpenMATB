@@ -14,7 +14,7 @@ This pipeline processes raw OpenPose CSV files through 8 steps:
     - Original: Raw normalized coordinates (no alignment)
     - Procrustes Global: Aligned to global template across all participants
     - Procrustes Participant: Aligned to participant-specific template
-8. Compute linear metrics → Calculate velocity, acceleration, and RMS for each feature
+8. Compute linear metrics → Calculate velocity, acceleration, and features (RMS, mean, min/max)
 
 The pipeline then supports Recurrence Quantification Analysis (RQA) to examine temporal dynamics of facial movements.
 
@@ -91,7 +91,7 @@ data/processed_data/<session>/      # session = experimental or baseline
 │       ├── procrustes_global/
 │       └── procrustes_participant/
 │
-├── linear_metrics/                 # Step 8: Velocity, acceleration, RMS
+├── linear_metrics/                 # Step 8: Displacement, Velocity, Acceleration
 │   ├── original_linear.csv
 │   ├── procrustes_global_linear.csv
 │   └── procrustes_participant_linear.csv
@@ -113,7 +113,34 @@ Condition codes: L (Low), M (Moderate), H (High)
 ## Quick Start
 
 ### 0. Download Data from OSF
-Download raw pose csvs from https://osf.io/dzgsv/ and place into data/raw_data
+
+Download the **raw OpenPose CSV files** from the project repository:
+🔗 [https://osf.io/dzgsv/](https://osf.io/dzgsv/)
+
+1. Extract the downloaded archive (it contains two folders: `experimental_pose` and `baseline_pose`).
+2. Place these folders inside your local project directory at:
+
+   ```
+   data/raw_data/
+   ```
+
+   The structure should look like this:
+
+   ```
+   data/
+   └── raw_data/
+       ├── experimental_pose/
+       │   ├── 401_H.csv
+       │   ├── 402_M.csv
+       │   └── ...
+       └── baseline_pose/
+           ├── 401_L.csv
+           ├── 402_M.csv
+           └── ...
+   ```
+
+Each `.csv` file corresponds to a single participant-condition trial (e.g., `472_H.csv` = participant 472, high-load condition).
+
 
 ### 1. Configure Paths
 By default the config file is set to the experimental (8-min) blocks. To change edit `utils/config.py` to set data directories:
@@ -209,13 +236,17 @@ WINDOW_OVERLAP = 0.5       # 50% overlap between windows
 ### Output Files
 
 #### Linear Metrics CSV
-Columns: `participant`, `condition`, `window_index`, `window_start`, `window_end`, then for each feature:
+Each file (e.g., `original_linear.csv`) contains one row per window summarizing displacement-, velocity-, and acceleration-based statistics for each feature.
 
-`<feature>_mean_vel`: Mean velocity magnitude
-`<feature>_mean_acc`: Mean acceleration magnitude
-`<feature>_rms`: Root mean square
+`<feature>_[min|max|rms|mean]` — displacement statistics
 
-Example features: `center_face_x`, `center_face_y`, `blink_aperture`, `mouth_aperture`, `head_rotation_rad`, `pupil_dx`, `pupil_dy`
+`<feature>_vel_[min|max|rms|mean]` — velocity statistics
+
+`<feature>_acc_[min|max|rms|mean]` — acceleration statistics
+
+Example features: `head_rotation_rad`, `head_tx`, `blink_aperture`, `mouth_aperture`, `pupil_dx`
+
+Each feature yields 12 values (min, max, RMS, mean × displacement, velocity, acceleration).
 
 #### RQA Metrics CSV
 Columns: `participant`, `condition`, `column`, `window_index`, `window_start`, `window_end`, then:
