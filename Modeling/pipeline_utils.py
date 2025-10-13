@@ -2,22 +2,19 @@
 # -*- coding: utf-8 -*-
 
 """
-Utility functions for the Random Forest workload detection pipeline.
 
-This module contains all core functionality for:
-  - Data loading and preprocessing
-  - Feature selection (forward/backward elimination)
-  - Model training and evaluation
-  - Results management and logging
-  - Learning curve analysis
+This script orchestrates:
+  1) Loading and merging feature CSVs (supports wide and long formats).
+  2) Optional feature selection (backward elimination via permutation importance).
+  3) Model training/evaluation across multiple seeds and split strategies.
+  4) Learning-curve experiments with per-minute feature selection and overlap control.
+  5) Results logging to JSON and a consolidated CSV.
 
-Functions are organized into sections:
-  1. Configuration & Setup
-  2. Data Loading & Preprocessing  
-  3. Feature Selection
-  4. Model Training & Evaluation
-  5. Results Management
-  6. Learning Curves
+Design choices:
+- Feature selection is executed ONCE per model (or once per minute for learning curves)
+  to avoid leakage, reduce variance, and cut runtime.
+- RandomForest + StandardScaler + optional PCA inside a Pipeline for consistency.
+- Balanced accuracy as the primary headline metric
 """
 
 import os
@@ -47,70 +44,74 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
+# Quiet down noisy libraries (e.g., pandas chained assignment warnings or sklearn user warnings)
 warnings.filterwarnings('ignore', category=UserWarning)
 
-
 # ============================================================================
-# 1. CONFIGURATION & SETUP
+# CONFIGURATION & SETUP
 # ============================================================================
 
-# Random Forest hyperparameters (fixed for all experiments)
+# Stable RF defaults; class_weight balanced to counter skewed labels.
 RF_PARAMS = {
     "n_estimators": 300,
-    "max_depth": None,
-    "class_weight": "balanced",
-    "n_jobs": -1,
+    "max_depth": None,          # Let trees grow to purity; RF typically robust here.
+    "class_weight": "balanced", # Reweight classes by inverse frequency.
+    "n_jobs": -1,               # Use all cores.
 }
 
-# Class labels for workload conditions
+# Ordered labels; used for metrics (F1, kappa, confusion matrix normalization).
 LABELS = ["L", "M", "H"]
 
-# Columns that should not be used as features
+# Non-feature columns to drop before model fit. These are identifiers or targets.
 ID_COLS = {
     "condition", "participant", "window_index",
     "window_start", "window_end", "minute",
-    "window_start_s", "window_end_s",  # Alternative naming
+    "window_start_s", "window_end_s",
 }
+
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.inspection import permutation_importance
 
 
 def get_all_model_configs(
     experiment_config, feature_groups, default_config, skip_learning_curves=False
 ):
     """
-    Generate all model configurations from experiment definitions.
-    
-    Combines experiment specifications with default settings and resolves
-    feature group mappings.
-    
+    Expand experiment definitions into fully-resolved model configs.
+
+    - Merges per-experiment overrides with defaults.
+    - Resolves feature group names -> file paths.
+    - Optionally skips "learning" sections to speed runs.
+
     Args:
-        experiment_config: Dictionary of experiment sections
-        feature_groups: Mapping of feature group names to file paths
-        default_config: Default model configuration
-        skip_learning_curves: If True, skip learning curve experiments
-        
+        experiment_config (dict): Sections keyed by name, each with 'enabled' and 'experiments'.
+        feature_groups (dict): Mapping group_name -> (filepath, phase) tuples.
+        default_config (dict): Global defaults for models.
+        skip_learning_curves (bool): If True, ignore sections whose name includes 'learning'.
+
     Returns:
-        dict: Mapping of model names to full configurations
+        dict: { model_name: config dict with resolved file list }
     """
     all_models = {}
     
     for section_name, section in experiment_config.items():
-        # Skip disabled sections
+        # Respect "enabled: false"
         if not section.get("enabled", True):
             continue
         
-        # Skip learning curves if requested
+        # Fast path: allow skipping heavy learning-curve sections
         if skip_learning_curves and "learning" in section_name.lower():
             continue
         
-        # Process each experiment in this section
+        # Iterate declared experiments in the section
         for exp in section.get("experiments", []):
             name = exp["name"]
             
-            # Build configuration by merging defaults with experiment-specific settings
+            # Shallow-merge default config with the experiment overrides
             config = default_config.copy()
             config.update(exp)
             
-            # Resolve feature groups to file paths
+            # Resolve declared feature group names to actual file tuples
             config["files"] = []
             for group_name in exp["feature_groups"]:
                 if group_name not in feature_groups:
@@ -127,16 +128,14 @@ def get_all_model_configs(
 
 def check_model_complete(model_name, output_dir):
     """
-    Check if a model has been fully run.
-    
-    A model is considered complete if its output JSON exists.
-    
+    Check if an experiment's JSON output already exists (used to resume/skip).
+
     Args:
-        model_name: Name of the model
-        output_dir: Directory containing results
-        
+        model_name (str): Unique experiment name.
+        output_dir (str | Path): Directory where JSON results are saved.
+
     Returns:
-        bool: True if model results exist
+        bool: True if {model_name}.json exists -> considered "complete".
     """
     output_path = Path(output_dir) / f"{model_name}.json"
     return output_path.exists()
@@ -144,10 +143,10 @@ def check_model_complete(model_name, output_dir):
 
 def prompt_user_action():
     """
-    Prompt user for action when existing results are found.
-    
+    CLI prompt for how to handle existing results when re-running.
+
     Returns:
-        str: User choice ('overwrite', 'continue', 'skip', or 'cancel')
+        str: One of {'overwrite','continue','skip','cancel'}.
     """
     print("\nWhat would you like to do?")
     print("  [o] Overwrite all existing results")
@@ -168,23 +167,194 @@ def prompt_user_action():
         else:
             print("Invalid choice. Please enter o, c, s, or x.")
 
+# ============================================================================
+#  Feature Selection
+# ============================================================================
+
+def prefilter_low_variance_and_corr(X, var_thresh=1e-8, corr_thresh=0.95):
+    """
+    Aggressive prefilter: drop near-constant features and highly correlated pairs.
+    
+    Args:
+        X: Feature matrix (DataFrame)
+        var_thresh: Variance threshold for removing near-constant features
+        corr_thresh: Correlation threshold (lower = more aggressive, e.g., 0.90-0.95)
+        
+    Returns:
+        DataFrame with filtered features
+    """
+    # Remove near-zero variance features
+    vt = VarianceThreshold(threshold=var_thresh)
+    X_filtered = pd.DataFrame(
+        vt.fit_transform(X), 
+        index=X.index,
+        columns=X.columns[vt.get_support()]
+    )
+    
+    if X_filtered.shape[1] <= 1:
+        return X_filtered
+    
+    # Remove highly correlated features
+    corr = X_filtered.corr().abs()
+    upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+    
+    to_drop = set()
+    for col in upper.columns:
+        high_corr = upper.index[upper[col] >= corr_thresh].tolist()
+        to_drop.update(high_corr)
+    
+    keep_cols = [c for c in X_filtered.columns if c not in to_drop]
+    return X_filtered[keep_cols]
+
+
+def backward_elimination_permutation(
+    X, y,
+    cv_folds=5,
+    n_repeats=5,
+    threshold_percentile=25,  # Remove bottom 25% of features at a time
+    min_features=5,
+    random_state=0
+):
+    """
+    Permutation importance-based elimination that removes multiple features at once.
+    
+    Strategy:
+    - Use permutation importance (more reliable than gini importance)
+    - Remove bottom X% of features at each iteration
+    - Continue until performance degrades
+    
+    Args:
+        X: Feature matrix (DataFrame)
+        y: Target labels
+        cv_folds: Number of CV folds
+        n_repeats: Number of permutation repeats
+        threshold_percentile: Remove features below this importance percentile
+        min_features: Minimum features to retain
+        random_state: Random seed
+        
+    Returns:
+        tuple: (selected_features, best_score)
+    """
+    # Prefilter
+    X_filtered = prefilter_low_variance_and_corr(X, corr_thresh=0.95)
+    features = list(X_filtered.columns)
+    
+    if len(features) <= min_features:
+        return features, 0.0
+    
+    rf = RandomForestClassifier(**RF_PARAMS, random_state=random_state)
+    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+    
+    def cv_score(feat_list):
+        return cross_val_score(
+            rf, X_filtered[feat_list], y, cv=cv, 
+            scoring="balanced_accuracy", n_jobs=-1
+        ).mean()
+    
+    best_score = cv_score(features)
+    best_features = features.copy()
+    
+    iteration = 0
+    while len(features) > min_features:
+        iteration += 1
+        
+        # Compute permutation importance across CV folds
+        importances = []
+        for train_idx, val_idx in cv.split(X_filtered[features], y):
+            X_train = X_filtered[features].iloc[train_idx]
+            X_val = X_filtered[features].iloc[val_idx]
+            y_train = y[train_idx]
+            y_val = y[val_idx]
+            
+            rf.set_params(random_state=random_state + iteration)
+            rf.fit(X_train, y_train)
+            
+            perm_imp = permutation_importance(
+                rf, X_val, y_val,
+                scoring="balanced_accuracy",
+                n_repeats=n_repeats,
+                random_state=random_state + iteration,
+                n_jobs=-1
+            )
+            importances.append(perm_imp.importances_mean)
+        
+        # Average importances across folds
+        mean_importance = np.mean(importances, axis=0)
+        importance_df = pd.DataFrame({
+            'feature': features,
+            'importance': mean_importance
+        }).sort_values('importance')
+        
+        # Remove bottom percentile
+        n_to_remove = max(1, int(len(features) * (threshold_percentile / 100)))
+        n_to_remove = min(n_to_remove, len(features) - min_features)
+        
+        if n_to_remove == 0:
+            break
+        
+        features_to_remove = importance_df['feature'].iloc[:n_to_remove].tolist()
+        candidate_features = [f for f in features if f not in features_to_remove]
+        
+        # Evaluate
+        candidate_score = cv_score(candidate_features)
+        
+        print(f"  Iteration {iteration}: {len(features)} -> {len(candidate_features)} features, "
+              f"score: {candidate_score:.4f} (best: {best_score:.4f})")
+        
+        # Update best if improved
+        if candidate_score >= best_score - 0.005:  # Allow small drops
+            if candidate_score > best_score:
+                best_score = candidate_score
+                best_features = candidate_features.copy()
+            features = candidate_features
+        else:
+            # Performance degraded significantly, stop
+            break
+    
+    return best_features, best_score
+
+
+def backward_elimination_rf_fast(X, y, cv_folds=5, random_state=0):
+    """
+    Thin wrapper for permutation-only backward elimination used in learning curves.
+
+    Args:
+        X (pd.DataFrame): Feature matrix.
+        y (np.ndarray): Labels.
+        cv_folds (int): Cross-validation folds inside feature selection.
+        random_state (int): Seed.
+
+    Returns:
+        tuple[list[str], float]: (selected_features, best_cv_score)
+    """    
+    features, score = backward_elimination_permutation(
+        X, y,
+        cv_folds=cv_folds,
+        n_repeats=3,          # reduce runtime
+        threshold_percentile=20,
+        min_features=5,
+        random_state=random_state,
+    )
+    
+    return features, score
+
 
 # ============================================================================
-# 2. DATA LOADING & PREPROCESSING
+#  DATA LOADING & PREPROCESSING
 # ============================================================================
 
 def normalize_window_columns(df):
     """
-    Normalize window column names across different CSV formats.
-    
-    Some CSVs use 'window_start_s' while others use 'window_start'.
-    This function standardizes to 'window_start' and 'window_end'.
-    
+    Standardize window boundary column names.
+
+    Multiple CSV formats are supported; this harmonizes 'window_start_s'/'window_end_s'
+    into 'window_start'/'window_end' so downstream logic can assume consistent names.
+
     Args:
-        df: DataFrame with window columns
-        
+        df (pd.DataFrame): Input dataframe.
+
     Returns:
-        DataFrame with normalized column names
+        pd.DataFrame: Same data with normalized column names (copy if renamed).
     """
     rename_map = {}
     if "window_start_s" in df.columns and "window_start" not in df.columns:
@@ -200,19 +370,23 @@ def normalize_window_columns(df):
 
 def load_and_merge_features(file_list, skip_every=None):
     """
-    Load and merge multiple feature CSV files.
-    
-    Handles both wide-format (one row per window) and long-format
-    (multiple rows per window) CSV files. Automatically pivots long-format
-    data to wide format and merges on participant, condition, and window timing.
-    
+    Load multiple feature CSVs and merge them on key identifiers.
+
+    Supports:
+      - Wide format: one row per window with many feature columns.
+      - Long format: rows identified by 'feature' name + value columns; pivoted to wide.
+    Also supports downsampling windows (skip_every) to reduce temporal overlap.
+
     Args:
-        file_list: List of (filepath, phase) tuples
-                   phase is 'pre' for baseline or 'main' for experimental
-        skip_every: If provided, only keep every Nth window (for reducing overlap)
-        
+        file_list (list[tuple]): List of (filepath, phase) tuples; 'phase' is not used here
+                                 but kept for compatibility (e.g., 'pre' baseline vs 'main').
+        skip_every (int | None): Keep only every Nth window when 'window_index' exists.
+
     Returns:
-        DataFrame with merged features in wide format
+        pd.DataFrame: Merged wide-format dataset with harmonized time/minute columns.
+
+    Raises:
+        FileNotFoundError: If any CSV path is missing.
     """
     dfs_to_merge = []
     
@@ -226,80 +400,73 @@ def load_and_merge_features(file_list, skip_every=None):
         df = pd.read_csv(filepath)
         df = normalize_window_columns(df)
         
-        # Apply window skipping if requested (e.g., to reduce overlap)
+        # Optional downsampling: useful if sliding windows are dense/overlapping.
         if skip_every is not None and "window_index" in df.columns:
             df = df[df["window_index"] % skip_every == 0].copy()
         
-        # Ensure participant and condition are strings
+        # Ensure join keys are string-typed where appropriate to avoid merge mismatches.
         if "participant" in df.columns:
             df["participant"] = df["participant"].astype(str)
         if "condition" in df.columns:
             df["condition"] = df["condition"].astype(str)
         
-        # Add minute column if window_start exists
+        # Derive 'minute' for coarser alignment when exact window indices differ.
         if "window_start" in df.columns:
             df["minute"] = (df["window_start"] / 60).round().astype(int)
         
-        # Check if this is long-format data (has 'feature' column)
+        # Long-format detection: presence of a 'feature' column
         if "feature" in df.columns:
-            # Pivot from long to wide format
-            # Assume we have columns like: participant, condition, window_start, 
-            # window_end, feature, mean, rms, min, max
-            
+            # Build index for pivot; keep whatever time/ID columns exist.
             index_cols = [c for c in ["participant", "condition", "window_start", 
                                       "window_end", "window_index", "minute"] 
                           if c in df.columns]
             
+            # Everything else except 'feature' and known non-value columns is a value to pivot
             value_cols = [c for c in df.columns if c not in index_cols 
                           and c not in ["feature", "norm_method"]]
             
+            # Pivot to wide format: MultiIndex columns (value_name, feature) -> flattened after
             df = df.pivot_table(
                 index=index_cols,
                 columns="feature",
                 values=value_cols
             )
             
-            # Flatten multi-level column names
+            # Flatten multi-level columns: e.g., ('mean','HR') -> 'mean_HR'
             df.columns = ['_'.join(str(c) for c in col).strip() 
                           for col in df.columns.values]
             df = df.reset_index()
         
         dfs_to_merge.append(df)
     
-    # Merge all DataFrames
+    # Merge logic
     if len(dfs_to_merge) == 1:
         merged = dfs_to_merge[0]
     else:
-        # Determine merge keys - use what's available across all DataFrames
-        # Priority: participant, condition, window_index (most reliable)
-        # Fallback: participant, condition, minute
-        
-        # Check which columns are common across all dataframes
+        # Compute intersection of columns to find viable merge keys shared across files
         common_cols = set(dfs_to_merge[0].columns)
         for df in dfs_to_merge[1:]:
             common_cols = common_cols & set(df.columns)
         
-        # Determine best merge keys
+        # Prefer exact alignment on window_index; fallback to 'minute' if needed
         if "window_index" in common_cols:
             merge_keys = ["participant", "condition", "window_index"]
         elif "minute" in common_cols:
             merge_keys = ["participant", "condition", "minute"]
         else:
-            # Add minute to all dataframes if window_start exists
+            # As a last resort, derive 'minute' from 'window_start' where available
             for i, df in enumerate(dfs_to_merge):
                 if "window_start" in df.columns and "minute" not in df.columns:
                     dfs_to_merge[i]["minute"] = (df["window_start"] / 60).round().astype(int)
             merge_keys = ["participant", "condition", "minute"]
         
-        # Start with first dataframe
+        # Start merge from the first df, carry its timing columns to avoid duplicates
         merged = dfs_to_merge[0]
-        
-        # Keep track of timing columns from first dataframe
         timing_cols = [c for c in ["window_start", "window_end", "window_index"] 
                        if c in merged.columns]
         
         for df in dfs_to_merge[1:]:
-            # Drop duplicate timing columns from subsequent dataframes (keep from first)
+            # Drop duplicate timing columns from other dfs (retain from the first df)
             cols_to_drop = [c for c in df.columns 
                             if c in timing_cols and c not in merge_keys]
             df_clean = df.drop(columns=cols_to_drop, errors="ignore")
@@ -308,19 +475,17 @@ def load_and_merge_features(file_list, skip_every=None):
                 merged,
                 df_clean,
                 on=merge_keys,
-                how="inner",
+                how="inner",         # strict join to keep only rows present in all sources
                 suffixes=("", "_dup")
             )
             
-            # Remove duplicate columns created by merge
+            # Clean any duplicate columns created by merge suffixing
             dup_cols = [c for c in merged.columns if c.endswith("_dup")]
             merged = merged.drop(columns=dup_cols, errors="ignore")
     
-    # Ensure window_start and minute columns exist for learning curves
+    # Ensure both 'window_start' and 'minute' exist for downstream learning curves.
     if "window_start" not in merged.columns and "minute" in merged.columns:
-        # Reconstruct window_start from minute (approximate)
-        merged["window_start"] = merged["minute"] * 60
-    
+        merged["window_start"] = merged["minute"] * 60  # coarse back-fill
     if "minute" not in merged.columns and "window_start" in merged.columns:
         merged["minute"] = (merged["window_start"] / 60).round().astype(int)
     
@@ -329,15 +494,13 @@ def load_and_merge_features(file_list, skip_every=None):
 
 def drop_identifier_columns(df):
     """
-    Remove columns that shouldn't be used as features.
-    
-    Includes participant IDs, condition labels, window indices, etc.
-    
+    Remove non-feature columns prior to modeling.
+
     Args:
-        df: DataFrame with all columns
-        
+        df (pd.DataFrame): Input dataframe.
+
     Returns:
-        DataFrame with only feature columns
+        pd.DataFrame: Dataframe with ID_COLS removed (silently ignores missing).
     """
     cols_to_drop = [c for c in ID_COLS if c in df.columns]
     return df.drop(columns=cols_to_drop, errors="ignore")
@@ -345,20 +508,26 @@ def drop_identifier_columns(df):
 
 def make_train_test_split(df, split_strategy, random_state=0):
     """
-    Split data into train and test sets using specified strategy.
-    
+    Split dataset into train/test according to strategy.
+
+    - 'random': stratified 80/20 across all rows (cross-task).
+    - 'participant': leave ~20% of participants out entirely (cross-participant).
+
     Args:
-        df: DataFrame with features and labels
-        split_strategy: Either 'random' (cross-task) or 'participant' (cross-participant)
-        random_state: Random seed for reproducibility
-        
+        df (pd.DataFrame): Full merged dataset with 'condition' and 'participant'.
+        split_strategy (str): 'random' or 'participant'.
+        random_state (int): Seed for reproducibility.
+
     Returns:
-        tuple: (train_df, test_df)
+        tuple[pd.DataFrame, pd.DataFrame]: (train_df, test_df)
+
+    Raises:
+        ValueError: For unsupported split_strategy.
     """
     y = df["condition"].values
     
     if split_strategy == "random":
-        # Random 80/20 split, stratified by condition
+        # Stratified on label to preserve class ratios in both splits.
         train_idx, test_idx = train_test_split(
             df.index,
             test_size=0.2,
@@ -367,7 +536,8 @@ def make_train_test_split(df, split_strategy, random_state=0):
         )
     
     elif split_strategy == "participant":
-        # Leave-participant-out: hold out ~20% of participants
+        # Leave-participant-out split:
+        # Hold out a subset of participants (~20%) so the model generalizes to unseen subjects.
         participants = df["participant"].unique()
         rng = np.random.default_rng(random_state)
         rng.shuffle(participants)
@@ -388,193 +558,53 @@ def make_train_test_split(df, split_strategy, random_state=0):
     return df.loc[train_idx], df.loc[test_idx]
 
 
-# ============================================================================
-# 3. FEATURE SELECTION
-# ============================================================================
-
-def backward_elimination_rf(X, y, cv_folds=5, tol=1e-4, random_state=0):
+def fit_and_evaluate(df, split_strategy, seed, config, selected_features=None):
     """
-    Perform backward elimination using Random Forest feature importances.
-    
-    Iteratively removes the least important feature as long as cross-validated
-    performance doesn't degrade beyond tolerance threshold.
-    
+    Train and evaluate a single RF pipeline for a given seed and split.
+
+    Note:
+    - Feature selection MUST be done upstream to avoid target leakage and to amortize cost.
+      This function only applies a provided feature subset.
+
     Args:
-        X: Feature matrix (DataFrame)
-        y: Target labels
-        cv_folds: Number of cross-validation folds
-        tol: Tolerance for performance degradation
-        random_state: Random seed
-        
+        df (pd.DataFrame): Full merged dataset.
+        split_strategy (str): 'random' or 'participant'.
+        seed (int): Random seed.
+        config (dict): Model config controlling scaler/PCA usage.
+        selected_features (list[str] | None): Pre-selected feature names.
+
     Returns:
-        tuple: (selected_features, best_score)
-            selected_features: List of selected feature names
-            best_score: Best balanced accuracy achieved
+        dict: { 'metrics': {...}, 'cm': confusion_matrix (normalized true) }
     """
-    features = X.columns.tolist()
-    rf = RandomForestClassifier(**RF_PARAMS, random_state=random_state)
-    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
-    
-    # Baseline performance with all features
-    best_score = cross_val_score(
-        rf, X[features], y, cv=cv, scoring="balanced_accuracy"
-    ).mean()
-    best_features = features.copy()
-    
-    # Progress bar for elimination iterations
-    pbar = tqdm(
-        range(len(features) - 1),
-        desc="  Feature selection",
-        leave=False,
-        position=1
-    )
-    
-    # Iteratively remove least important feature
-    for _ in pbar:
-        if len(features) <= 1:
-            break
-        
-        # Train model to get feature importances
-        rf.fit(X[features], y)
-        
-        # Find least important feature
-        least_important_idx = int(np.argmin(rf.feature_importances_))
-        least_important = features[least_important_idx]
-        
-        # Test performance without this feature
-        candidate_features = [f for f in features if f != least_important]
-        candidate_score = cross_val_score(
-            rf, X[candidate_features], y, cv=cv, scoring="balanced_accuracy"
-        ).mean()
-        
-        # Update progress bar
-        pbar.set_postfix({
-            "n_features": len(candidate_features),
-            "score": f"{candidate_score:.4f}"
-        })
-        
-        # Accept removal if performance doesn't degrade
-        if candidate_score + tol >= best_score:
-            best_score = candidate_score
-            best_features = candidate_features
-            features = candidate_features
-        else:
-            # Performance degraded, stop elimination
-            break
-    
-    pbar.close()
-    return best_features, best_score
-
-
-# ============================================================================
-# 4. MODEL TRAINING & EVALUATION
-# ============================================================================
-
-def select_features_once(df, split_strategy, config, seed=0):
-    """
-    Perform feature selection once using a single seed.
-    
-    Feature selection is computationally expensive, so we do it once
-    and reuse the selected features across all random seeds.
-    
-    Args:
-        df: DataFrame with features and labels
-        split_strategy: How to split train/test
-        config: Model configuration dict
-        seed: Random seed for feature selection (default: 0)
-        
-    Returns:
-        list: Selected feature names
-    """
-    # Split data
-    train_df, _ = make_train_test_split(df, split_strategy, random_state=seed)
-    
-    # Extract labels and features
-    y_train = train_df["condition"].values
-    X_train = drop_identifier_columns(train_df).drop(columns=["condition"], errors="ignore")
-    
-    # Get feature selection method from config
-    selection_method = config.get("feature_selection")
-    
-    if selection_method == "backward":
-        # Backward elimination
-        selected_features, score = backward_elimination_rf(
-            X_train, y_train, random_state=seed
-        )
-        print(f"    Backward elimination: {len(selected_features)}/{len(X_train.columns)} "
-              f"features (score: {score:.4f})")
-    
-    elif selection_method == "forward":
-        # Forward selection (not implemented yet - placeholder)
-        print(f"    Forward selection not implemented, using all {len(X_train.columns)} features")
-        selected_features = list(X_train.columns)
-    
-    elif selection_method is None:
-        # No feature selection
-        selected_features = list(X_train.columns)
-        print(f"    Using all {len(selected_features)} features (no selection)")
-    
-    else:
-        raise ValueError(
-            f"Unknown feature_selection method: '{selection_method}'. "
-            f"Must be 'backward', 'forward', or None."
-        )
-    
-    # Ensure we have at least some features
-    if not selected_features:
-        print("    WARNING: No features selected, using all features")
-        selected_features = list(X_train.columns)
-    
-    return selected_features
-
-
-def fit_and_evaluate(df, split_strategy, seed, config):
-    """
-    Fit and evaluate with PER-SEED feature selection.
-    Feature selection now happens fresh for each seed.
-    """
-    # Split data
+    # Split once per seed
     train_df, test_df = make_train_test_split(df, split_strategy, random_state=seed)
 
-    # Labels
+    # Extract targets
     y_train = train_df["condition"].values
     y_test  = test_df["condition"].values
 
-    # Features
+    # Extract features: drop IDs and the target; keep only engineered columns
     X_train = drop_identifier_columns(train_df).drop(columns=["condition"], errors="ignore")
     X_test  = drop_identifier_columns(test_df).drop(columns=["condition"], errors="ignore")
 
-    # *** FEATURE SELECTION MOVED HERE (per-seed) ***
-    selection_method = config.get("feature_selection")
-    
-    if selection_method == "backward":
-        selected_features, _ = backward_elimination_rf(X_train, y_train, random_state=seed)
-    elif selection_method == "forward":
-        # Forward selection not implemented yet
-        selected_features = list(X_train.columns)
-    elif selection_method is None:
-        selected_features = list(X_train.columns)
-    else:
-        raise ValueError(f"Unknown feature_selection method: '{selection_method}'")
-    
-    # Ensure we have at least some features
-    if not selected_features:
-        selected_features = list(X_train.columns)
-    
-    # Apply selected features
-    X_train = X_train[selected_features]
-    X_test = X_test[selected_features]
+    # Enforce pre-selected feature set if provided (avoids per-seed drift/leakage)
+    if selected_features is not None:
+        X_train = X_train[selected_features]
+        X_test = X_test[selected_features]
+    # else: use all available feature columns
 
-    # Pipeline
+    # Build pipeline components conditionally
     pipeline_steps = []
 
     if config.get("use_scaler", True):
         pipeline_steps.append(("scaler", StandardScaler()))
 
     if config.get("use_pca", False):
+        # Keep components that explain 'pca_variance' of variance
         pca_variance = config.get("pca_variance", 0.95)
         pipeline_steps.append(("pca", PCA(n_components=pca_variance)))
 
+    # RF config per-seed to vary bootstrap randomness, etc.
     rf_kwargs = dict(RF_PARAMS)
     rf_kwargs["random_state"] = seed
     rf_kwargs.setdefault("n_jobs", -1)
@@ -582,11 +612,11 @@ def fit_and_evaluate(df, split_strategy, seed, config):
 
     pipe = Pipeline(pipeline_steps)
 
-    # Fit / predict
+    # Fit and predict
     pipe.fit(X_train, y_train)
     y_pred = pipe.predict(X_test)
 
-    # Metrics
+    # Core metrics; use LABELS to ensure consistent averaging/ordering.
     metrics = {
         "test_acc": accuracy_score(y_test, y_pred),
         "test_bal_acc": balanced_accuracy_score(y_test, y_pred),
@@ -594,24 +624,37 @@ def fit_and_evaluate(df, split_strategy, seed, config):
         "test_kappa": cohen_kappa_score(y_test, y_pred, labels=LABELS),
     }
 
+    # Confusion matrix normalized by true label counts; expressed in %
     cm = confusion_matrix(y_test, y_pred, labels=LABELS, normalize="true") * 100.0
     
-    # *** RETURN SELECTED FEATURES TOO ***
-    return {"metrics": metrics, "cm": cm, "selected_features": selected_features}
-
+    return {"metrics": metrics, "cm": cm}
 
 
 def run_single_model(name, config, output_dir, force=False, resume=False):
     """
-    Run a single model configuration across multiple random seeds.
-    Now does feature selection PER-SEED instead of once globally.
+    Run a single experiment:
+      - Load/merge features
+      - (Optionally) perform ONE feature selection on seed=0 training split
+      - Evaluate across N seeds using the same selected features
+      - Save aggregated metrics & confusion matrix
+
+    Args:
+        name (str): Experiment name.
+        config (dict): Experiment config (includes 'files', 'split_strategy', etc.).
+        output_dir (str | Path): Output directory for JSON + log CSV.
+        force (bool): If True, overwrite existing JSON.
+        resume (bool): If True, skip completed models unless incomplete.
+
+    Notes:
+        - Using seed=0 for feature selection is a pragmatic compromise:
+          stable subset, no per-seed leakage, reduced cost.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     output_path = output_dir / f"{name}.json"
     
-    # Check if already complete
+    # Respect existing results unless explicitly forcing/resuming
     if output_path.exists() and not force and not resume:
         print(f"[SKIP] {name}: already complete")
         return
@@ -622,35 +665,52 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
     print(f"Split: {config['split_strategy']}")
     print(f"{'='*60}")
     
-    # Load and merge features
+    # Load and merge declared feature groups
     merged = load_and_merge_features(
         config["files"],
         skip_every=config.get("skip_every")
     )
     print(f"Loaded data: {merged.shape}")
     
-    # *** REMOVE select_features_once() call ***
-    # Feature selection now happens inside fit_and_evaluate() per-seed
+    # -----------------------------
+    # ONE-TIME FEATURE SELECTION
+    # -----------------------------
+    selected_features = None
+    if config.get("feature_selection") == "backward":
+        print("Performing feature selection (once for all seeds)...")
+        # Selection performed only on the training fold of seed=0 to avoid test leakage
+        train_df, _ = make_train_test_split(merged, config["split_strategy"], random_state=0)
+        y_train = train_df["condition"].values
+        X_train = drop_identifier_columns(train_df).drop(columns=["condition"], errors="ignore")
+        
+        # Use the permutation-based backward elimination (fast, robust for RF)
+        selected_features, score = backward_elimination_permutation(
+            X_train, y_train, 
+            n_repeats=3,            # repeat permutation few times for speed
+            threshold_percentile=20,# keep features above this importance percentile
+            min_features=5,         # never drop below this baseline
+            random_state=0
+        )
+        print(f"  Selected {len(selected_features)}/{len(X_train.columns)} features (score: {score:.4f})")
     
-    # Run across multiple seeds
+    # Evaluate across multiple seeds with the fixed feature subset
     n_seeds = config.get("n_seeds", 20)
     all_metrics = []
     all_cms = []
-    all_selected_features = []  # Track which features each seed selected
     
     for seed in tqdm(range(n_seeds), desc=f"{name}"):
         result = fit_and_evaluate(
             merged,
             split_strategy=config["split_strategy"],
             seed=seed,
-            config=config  # *** Pass config instead of selected_features ***
+            config=config,
+            selected_features=selected_features  # fixed across seeds
         )
         
         all_metrics.append(result["metrics"])
         all_cms.append(result["cm"])
-        all_selected_features.append(result["selected_features"])
     
-    # Aggregate results across seeds
+    # Aggregate metrics across seeds
     metrics_df = pd.DataFrame(all_metrics)
     
     aggregated_metrics = {
@@ -664,28 +724,17 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
         "test_kappa_std": float(metrics_df["test_kappa"].std(ddof=1)),
     }
     
-    # Average confusion matrix across seeds
+    # Average the confusion matrices elementwise (still percentages)
     cm_avg = np.mean(np.stack(all_cms, axis=0), axis=0)
     
-    # *** Compute feature selection statistics ***
-    # Find features selected by majority of seeds (>50%)
-    from collections import Counter
-    feature_counts = Counter()
-    for features in all_selected_features:
-        feature_counts.update(features)
-    
-    total_seeds = len(all_selected_features)
-    common_features = [f for f, count in feature_counts.items() if count > total_seeds / 2]
-    
-    # Save results
+    # Persist results (omit raw file list for brevity/noise)
     results = {
         "name": name,
         "config": {k: v for k, v in config.items() if k != "files"},
         "metrics": aggregated_metrics,
         "confusion_matrix": cm_avg.tolist(),
-        "selected_features_common": common_features,  # Features selected by >50% of seeds
-        "n_features_mean": float(np.mean([len(f) for f in all_selected_features])),
-        "n_features_std": float(np.std([len(f) for f in all_selected_features], ddof=1)),
+        "selected_features": selected_features if selected_features else [],
+        "n_features": len(selected_features) if selected_features else len(merged.columns) - len(ID_COLS),
         "n_seeds": n_seeds,
         "timestamp": datetime.now().isoformat(),
     }
@@ -696,28 +745,379 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
     print(f"✓ Completed: {name}")
     print(f"  Balanced Accuracy: {aggregated_metrics['test_bal_acc_mean']:.4f} "
           f"± {aggregated_metrics['test_bal_acc_std']:.4f}")
-    print(f"  Features selected: {results['n_features_mean']:.1f} ± {results['n_features_std']:.1f}")
+    print(f"  Features used: {results['n_features']}")
     
-    # Log to CSV
+    # Also append/update a flat CSV log for quick comparison across experiments
     log_to_csv(name, results, output_dir)
+
+# ============================================================================
+#  Learning Curves
+# ============================================================================
+
+def run_learning_curve_experiment(config, feature_groups, default_config, output_dir, force=False):
+    """
+    Execute a learning curve experiment with incremental time (minutes).
+
+    Two-phase design:
+      PHASE 1: For each minute 'm', perform feature selection ONCE using data
+               available up to that minute (plus baseline if provided).
+      PHASE 2: For each seed and minute, evaluate with the pre-selected features
+               while purging overlapping windows near the split to avoid leakage.
+
+    Key implementation details:
+      - 'w_idx' is assumed to increment per window; window_cutoff = minute * 2
+        implies 2 windows/min (adjust if your data differs).
+      - test_parity ensures train/test windows alternate parity to reduce overlap.
+      - 'adaptive_*' normalization modes prevent test-time knowledge of test stats.
+    """
+    name = config["name"]
+    output_path = Path(output_dir) / f"{name}.json"
+    
+    if output_path.exists() and not force:
+        print(f"[SKIP] {name}: already complete")
+        return
+    
+    print(f"\n{'='*60}")
+    print(f"Running Learning Curves: {name}")
+    print(f"{'='*60}")
+    
+    # Determine if baseline ('pre') data is used for early minutes
+    has_baseline = config.get("baseline_groups") and len(config["baseline_groups"]) > 0
+    
+    # Normalization strategy for learning curves
+    norm_mode = config.get("normalization_mode", "standard")
+    valid_modes = ["standard", "adaptive_per_trial", "adaptive_global"]
+    if norm_mode not in valid_modes:
+        raise ValueError(f"normalization_mode must be one of {valid_modes}, got '{norm_mode}'")
+    
+    # Baseline data implies we *cannot* do adaptive normalization (would leak baseline distribution)
+    if has_baseline and norm_mode != "standard":
+        raise ValueError(
+            f"Adaptive normalization modes can only be used without baseline data."
+        )
+    
+    # Feature selection method (usually 'backward' here)
+    selection_method = config.get("feature_selection", default_config.get("feature_selection"))
+    
+    print(f"Normalization mode: {norm_mode}")
+    print(f"Feature selection: {selection_method if selection_method else 'None'}")
+    
+    # -------------------------
+    # Load baseline (if any)
+    # -------------------------
+    if has_baseline:
+        baseline_files = [feature_groups[g] for g in config["baseline_groups"]]
+        baseline_df = load_and_merge_features(baseline_files, skip_every=config.get("skip_every"))
+        print(f"Baseline data: {baseline_df.shape}")
+        
+        X_baseline = drop_identifier_columns(baseline_df).drop(columns=["condition"], errors="ignore")
+        y_baseline = baseline_df["condition"].values
+    else:
+        print("No baseline data - will start from minute 1")
+        X_baseline = None
+        y_baseline = None
+    
+    # -------------------------
+    # Load experimental data
+    # -------------------------
+    exp_files = [feature_groups[g] for g in config["experimental_groups"]]
+    exp_df = load_and_merge_features(exp_files, skip_every=config.get("skip_every"))
+    print(f"Experimental data: {exp_df.shape}")
+
+    # We rely on window_index to define temporal cutoffs; enforce presence
+    if "window_index" not in exp_df.columns:
+        raise ValueError("Expected 'window_index' in experimental data.")
+    exp_df["w_idx"] = exp_df["window_index"].astype(int)
+
+    # Grouping keys to define disjoint entities (participant/trial/session)
+    GROUP_COLS = [c for c in ["participant", "trial_id", "trial", "session"] if c in exp_df.columns]
+    if not GROUP_COLS:
+        # Create a dummy grouping column if none exist
+        exp_df["__all__"] = 1
+        GROUP_COLS = ["__all__"]
+    
+    # Experimental schedule
+    minutes = config["minutes"]
+    n_seeds = config.get("n_seeds", default_config.get("n_seeds", 20))
+    
+    # Storage for per-minute metrics across seeds
+    results = {
+        m: {
+            "BalancedAcc": [],
+            "F1": [],
+            "Kappa": [],
+            "n_features": [],
+        }
+        for m in minutes
+    }
+    
+    # ============================================================================
+    # PHASE 1: Feature selection ONCE PER MINUTE
+    # ============================================================================
+    print("\n" + "="*60)
+    print("PHASE 1: Feature Selection (once per minute)")
+    print("="*60)
+    
+    minute_features = {}  # cache selected feature names per minute
+    
+    for minute in minutes:
+        # window_cutoff defines how much training time we allow (2 windows per minute assumed)
+        window_cutoff = minute * 2
+        mask_train = exp_df["w_idx"] < window_cutoff
+        
+        if minute == 0:
+            # Only baseline defines minute 0; if no baseline, there's nothing to train/choose on
+            if not has_baseline:
+                continue
+            X_for_selection = X_baseline
+            y_for_selection = y_baseline
+        else:
+            exp_train = exp_df[mask_train]
+            if exp_train.empty:
+                continue
+            
+            X_exp_train = drop_identifier_columns(exp_train).drop(columns=["condition"], errors="ignore")
+            y_exp_train = exp_train["condition"].values
+            
+            # Optionally concatenate baseline with early experimental windows
+            if has_baseline:
+                X_for_selection = pd.concat([X_baseline, X_exp_train], ignore_index=True)
+                y_for_selection = np.concatenate([y_baseline, y_exp_train])
+            else:
+                X_for_selection = X_exp_train
+                y_for_selection = y_exp_train
+        
+        # Execute feature selection once for this minute's available data
+        if selection_method == "backward":
+            print(f"\nMinute {minute}: Selecting features...")
+            selected_features, fs_score = backward_elimination_rf_fast(
+                X_for_selection, 
+                y_for_selection,
+                cv_folds=5,
+                random_state=42,
+            )
+            print(f"  → Selected {len(selected_features)} features (score: {fs_score:.4f})")
+            minute_features[minute] = selected_features
+        else:
+            # No FS: use whatever columns exist at selection time
+            minute_features[minute] = list(X_for_selection.columns)
+    
+    # ============================================================================
+    # PHASE 2: Evaluate across all seeds using pre-selected features
+    # ============================================================================
+    print("\n" + "="*60)
+    print("PHASE 2: Evaluation (20 seeds per minute)")
+    print("="*60 + "\n")
+    
+    for seed in tqdm(range(n_seeds), desc=f"{name}"):
+        for minute in minutes:
+            window_cutoff = minute * 2
+
+            # Parity trick: hold out alternating windows (by parity) after cutoff
+            # so adjacent windows don't leak information via overlap.
+            test_parity = window_cutoff % 2
+            mask_test = (exp_df["w_idx"] >= window_cutoff) & ((exp_df["w_idx"] % 2) == test_parity)
+            mask_train = exp_df["w_idx"] < window_cutoff
+
+            # Purge near neighbors in train that are adjacent to test windows (±1 index)
+            # to aggressively avoid overlap leakage.
+            if mask_test.any():
+                test_keys = exp_df.loc[mask_test, GROUP_COLS + ["w_idx"]].copy()
+                nbr_minus = test_keys.copy(); nbr_minus["w_idx"] -= 1
+                nbr_plus  = test_keys.copy();  nbr_plus["w_idx"]  += 1
+                banned = pd.concat([test_keys, nbr_minus, nbr_plus], ignore_index=True)
+                banned = banned[banned["w_idx"] >= 0]
+
+                ban_idx = pd.MultiIndex.from_frame(banned[GROUP_COLS + ["w_idx"]])
+                train_frame = exp_df.loc[mask_train, GROUP_COLS + ["w_idx"]]
+                train_idx = pd.MultiIndex.from_frame(train_frame)
+                to_purge = train_idx.isin(ban_idx)
+                purge_index = exp_df.loc[mask_train].index[to_purge]
+                if len(purge_index) > 0:
+                    mask_train.loc[purge_index] = False
+            
+            if mask_test.sum() == 0:
+                # Nothing to test at this minute for this seed/grouping
+                continue
+            
+            exp_train = exp_df[mask_train]
+            exp_test = exp_df[mask_test]
+            
+            # Build training set (optionally include baseline)
+            if minute == 0:
+                if not has_baseline:
+                    continue
+                X_train = X_baseline
+                y_train = y_baseline
+            else:
+                if exp_train.empty:
+                    continue
+                
+                X_exp_train = drop_identifier_columns(exp_train).drop(columns=["condition"], errors="ignore")
+                y_exp_train = exp_train["condition"].values
+                
+                if has_baseline:
+                    X_train = pd.concat([X_baseline, X_exp_train], ignore_index=True)
+                    y_train = np.concatenate([y_baseline, y_exp_train])
+                else:
+                    X_train = X_exp_train
+                    y_train = y_exp_train
+            
+            # Prepare test matrices
+            X_test = drop_identifier_columns(exp_test).drop(columns=["condition"], errors="ignore")
+            y_test = exp_test["condition"].values
+            
+            # Align features by intersection (defensive against rare column drift)
+            common_features = list(set(X_train.columns) & set(X_test.columns))
+            X_train = X_train[common_features]
+            X_test = X_test[common_features]
+            
+            # Apply the pre-selected feature subset for this minute
+            if minute in minute_features:
+                selected_features = minute_features[minute]
+                # Intersect again to be safe
+                selected_features = [f for f in selected_features if f in common_features]
+                X_train = X_train[selected_features]
+                X_test = X_test[selected_features]
+            
+            # -----------------------
+            # Normalization options
+            # -----------------------
+            if norm_mode == "standard":
+                # Fit scaler on training only; transform test with same params.
+                scaler = StandardScaler()
+                X_train_scaled = scaler.fit_transform(X_train)
+                X_test_scaled = scaler.transform(X_test)
+            
+            elif norm_mode == "adaptive_per_trial":
+                # Per-(participant, condition) normalization using training stats
+                # to handle distribution shifts across trials.
+                train_with_meta = exp_train[["participant", "condition"]].copy()
+                test_with_meta = exp_test[["participant", "condition"]].copy()
+                
+                X_train_scaled = np.zeros_like(X_train.values, dtype=float)
+                X_test_scaled = np.zeros_like(X_test.values, dtype=float)
+                
+                train_groups = train_with_meta.groupby(["participant", "condition"]).groups
+                
+                for (participant, condition), _ in train_groups.items():
+                    trial_train_mask = (train_with_meta["participant"] == participant) & \
+                                      (train_with_meta["condition"] == condition)
+                    trial_train_data = X_train.values[trial_train_mask]
+                    
+                    train_mean = np.mean(trial_train_data, axis=0)
+                    train_std = np.std(trial_train_data, axis=0)
+                    train_std[train_std == 0] = 1.0  # avoid divide-by-zero
+                    
+                    X_train_scaled[trial_train_mask] = (trial_train_data - train_mean) / train_std
+                    
+                    # Apply same stats to matching test trials (if any)
+                    trial_test_mask = (test_with_meta["participant"] == participant) & \
+                                     (test_with_meta["condition"] == condition)
+                    
+                    if trial_test_mask.any():
+                        trial_test_data = X_test.values[trial_test_mask]
+                        X_test_scaled[trial_test_mask] = (trial_test_data - train_mean) / train_std
+                
+                # Fallback: for test groups unseen in training, use global train stats
+                test_groups = test_with_meta.groupby(["participant", "condition"]).groups
+                for (participant, condition), _ in test_groups.items():
+                    if (participant, condition) not in train_groups:
+                        global_mean = np.mean(X_train.values, axis=0)
+                        global_std = np.std(X_train.values, axis=0)
+                        global_std[global_std == 0] = 1.0
+                        
+                        trial_test_mask = (test_with_meta["participant"] == participant) & \
+                                         (test_with_meta["condition"] == condition)
+                        trial_test_data = X_test.values[trial_test_mask]
+                        X_test_scaled[trial_test_mask] = (trial_test_data - global_mean) / global_std
+            
+            elif norm_mode == "adaptive_global":
+                # One global set of stats computed from training only
+                train_mean = np.mean(X_train.values, axis=0)
+                train_std = np.std(X_train.values, axis=0)
+                train_std[train_std == 0] = 1.0
+                
+                X_train_scaled = (X_train.values - train_mean) / train_std
+                X_test_scaled = (X_test.values - train_mean) / train_std
+            
+            # -----------------------
+            # Classifier fit/eval
+            # -----------------------
+            from sklearn.ensemble import RandomForestClassifier
+            rf_kwargs = dict(RF_PARAMS)
+            rf_kwargs["random_state"] = seed
+            rf_kwargs.setdefault("n_jobs", -1)
+            
+            clf = RandomForestClassifier(**rf_kwargs)
+            clf.fit(X_train_scaled, y_train)
+            y_pred = clf.predict(X_test_scaled)
+            
+            # Store metrics for this (seed, minute)
+            from sklearn.metrics import balanced_accuracy_score, f1_score, cohen_kappa_score
+            results[minute]["BalancedAcc"].append(balanced_accuracy_score(y_test, y_pred))
+            results[minute]["F1"].append(f1_score(y_test, y_pred, labels=LABELS, average="weighted"))
+            results[minute]["Kappa"].append(cohen_kappa_score(y_test, y_pred, labels=LABELS))
+            results[minute]["n_features"].append(len(X_train.columns))
+    
+    # Save the full learning-curve payload (including selected features per minute)
+    import json
+    from datetime import datetime
+    output_data = {
+        "name": name,
+        "config": config,
+        "has_baseline": has_baseline,
+        "normalization_mode": norm_mode,
+        "feature_selection": selection_method,
+        "minutes": minutes,
+        "results": results,
+        "selected_features_per_minute": {
+            str(m): minute_features.get(m, []) for m in minutes
+        },
+        "n_seeds": n_seeds,
+        "timestamp": datetime.now().isoformat(),
+    }
+    
+    with open(output_path, "w") as f:
+        json.dump(output_data, f, indent=2)
+    
+    print(f"\n✓ Completed: {name}")
+    
+    # Console summary of BA curve (mean ± std), plus average feature count used
+    print(f"\nLearning Curve Summary (Balanced Accuracy) - {norm_mode}:")
+    print(f"{'Minute':<10} {'Mean':<10} {'Std':<10} {'N':<10} {'Features':<15}")
+    print("-" * 60)
+    for minute in minutes:
+        if results[minute]["BalancedAcc"]:
+            mean_acc = np.mean(results[minute]["BalancedAcc"])
+            std_acc = np.std(results[minute]["BalancedAcc"], ddof=1)
+            n_samples = len(results[minute]["BalancedAcc"])
+            mean_feats = np.mean(results[minute]["n_features"])
+            std_feats = np.std(results[minute]["n_features"], ddof=1) if len(results[minute]["n_features"]) > 1 else 0
+            print(f"{minute:<10} {mean_acc*100:.2f}%    {std_acc*100:.2f}%    {n_samples:<10} "
+                  f"{mean_feats:.1f} ± {std_feats:.1f}")
 
 
 # ============================================================================
-# 5. RESULTS MANAGEMENT
+#  RESULTS MANAGEMENT
 # ============================================================================
 
 def log_to_csv(name, results, output_dir):
     """
-    Log experiment results to a CSV file for easy comparison.
-    
+    Append/update a compact CSV log for quick experiment comparisons.
+
     Args:
-        name: Experiment name
-        results: Results dictionary
-        output_dir: Directory containing experiment_log.csv
+        name (str): Experiment name.
+        results (dict): Results payload saved to JSON.
+        output_dir (str | Path): Folder where 'experiment_log.csv' lives/should live.
+
+    Behavior:
+        - Removes any existing row with the same experiment_name before appending,
+          so the CSV reflects the latest run for each experiment.
     """
     log_path = Path(output_dir) / "experiment_log.csv"
     
-    # Prepare row
+    # Flatten a subset of metrics/metadata into one row
     row = {
         "experiment_name": name,
         "split_strategy": results["config"].get("split_strategy", "unknown"),
@@ -732,12 +1132,11 @@ def log_to_csv(name, results, output_dir):
         "timestamp": results.get("timestamp", ""),
     }
     
-    # Append to CSV
     df = pd.DataFrame([row])
     
     if log_path.exists():
         existing = pd.read_csv(log_path)
-        # Remove old entry for this experiment if it exists
+        # De-duplicate by experiment_name (keep only latest)
         existing = existing[existing["experiment_name"] != name]
         df = pd.concat([existing, df], ignore_index=True)
     
@@ -746,10 +1145,13 @@ def log_to_csv(name, results, output_dir):
 
 def print_summary(output_dir):
     """
-    Print summary of all experiments.
-    
+    Pretty-print a quick summary of all experiments from the CSV log.
+
     Args:
-        output_dir: Directory containing experiment_log.csv
+        output_dir (str | Path): Directory containing 'experiment_log.csv'
+
+    Side effects:
+        Prints a table: Experiment | Split | Balanced Accuracy (mean ± std)
     """
     log_path = Path(output_dir) / "experiment_log.csv"
     
@@ -769,555 +1171,3 @@ def print_summary(output_dir):
         print(f"{row['experiment_name']:<40} {row['split_strategy']:<15} {bal_acc:<20}")
     
     print("=" * 80)
-
-
-# ============================================================================
-# 6. LEARNING CURVES
-# ============================================================================
-# def run_learning_curve_experiment(config, feature_groups, default_config, output_dir, force=False):
-#     """
-#     Run learning curve analysis with incremental training data.
-    
-#     Learning curves show how model performance changes as we add more
-#     training data. This is useful for understanding:
-#       - How much data is needed for good performance
-#       - Whether baseline data helps
-#       - How quickly the model adapts to new conditions
-    
-#     The experiment:
-#       1. Optionally starts with baseline data (minute 0)
-#       2. Incrementally adds experimental data (minutes 1, 2, 3, ...)
-#       3. Tests on the remaining experimental data
-#       4. Repeats across multiple random seeds
-    
-#     If no baseline_groups specified, starts at minute 1 instead of minute 0.
-    
-#     Args:
-#         config: Learning curve configuration dict with:
-#             - name: Experiment name
-#             - baseline_groups: List of baseline feature groups (optional, can be empty)
-#             - experimental_groups: List of experimental feature groups (required)
-#             - minutes: List of cutoff minutes to test
-#             - skip_every: Window skipping parameter (optional)
-#             - n_seeds: Number of random seeds (optional)
-#         feature_groups: Mapping of group names to file paths
-#         default_config: Default model settings
-#         output_dir: Directory to save results
-#         force: If True, overwrite existing results
-#     """
-#     name = config["name"]
-#     output_path = Path(output_dir) / f"{name}.json"
-    
-#     # Check if already complete
-#     if output_path.exists() and not force:
-#         print(f"[SKIP] {name}: already complete")
-#         return
-    
-#     print(f"\n{'='*60}")
-#     print(f"Running Learning Curves: {name}")
-#     print(f"{'='*60}")
-    
-#     # Check if we have baseline data
-#     has_baseline = config.get("baseline_groups") and len(config["baseline_groups"]) > 0
-    
-#     # Load baseline data if specified
-#     if has_baseline:
-#         baseline_files = [feature_groups[g] for g in config["baseline_groups"]]
-#         baseline_df = load_and_merge_features(baseline_files, skip_every=config.get("skip_every"))
-#         print(f"Baseline data: {baseline_df.shape}")
-        
-#         # Extract features for baseline (drop ID columns)
-#         X_baseline = drop_identifier_columns(baseline_df).drop(columns=["condition"], errors="ignore")
-#         y_baseline = baseline_df["condition"].values
-#     else:
-#         print("No baseline data - will start from minute 1")
-#         X_baseline = None
-#         y_baseline = None
-    
-#     # Load experimental data
-#     exp_files = [feature_groups[g] for g in config["experimental_groups"]]
-#     exp_df = load_and_merge_features(exp_files, skip_every=config.get("skip_every"))
-#     print(f"Experimental data: {exp_df.shape}")
-
-#     if "window_index" not in exp_df.columns:
-#         raise ValueError("Expected 'window_index' in experimental data.")
-#     exp_df["w_idx"] = exp_df["window_index"].astype(int)
-
-#     GROUP_COLS = [c for c in ["participant", "trial_id", "trial", "session"] if c in exp_df.columns]
-#     if not GROUP_COLS:
-#         exp_df["__all__"] = 1
-#         GROUP_COLS = ["__all__"]
-    
-#     # Settings
-#     minutes = config["minutes"]
-#     n_seeds = config.get("n_seeds", default_config.get("n_seeds", 20))
-    
-#     # Results storage: results[minute][metric] = [scores across seeds]
-#     results = {
-#         m: {
-#             "BalancedAcc": [],
-#             "F1": [],
-#             "Kappa": [],
-#         }
-#         for m in minutes
-#     }
-    
-#     # Run across seeds
-#     for seed in tqdm(range(n_seeds), desc=f"{name}"):
-#         for minute in minutes:
-#             # Convert minutes to window index
-#             # With 60s windows and 50% overlap (30s step), window_index = minute * 2
-#             window_cutoff = minute * 2
-
-#             # build non-overlapping TEST via parity, then purge TRAIN neighbors
-#             # TEST: all windows >= cutoff that match parity (avoid test-test overlap)
-#             test_parity = window_cutoff % 2
-#             mask_test = (exp_df["w_idx"] >= window_cutoff) & ((exp_df["w_idx"] % 2) == test_parity)
-
-#             # TRAIN: all windows before cutoff
-#             mask_train = exp_df["w_idx"] < window_cutoff
-
-#             # If there are test windows, purge any overlapping TRAIN windows (neighbors ±1 in same group)
-#             if mask_test.any():
-#                 test_keys = exp_df.loc[mask_test, GROUP_COLS + ["w_idx"]].copy()
-#                 nbr_minus = test_keys.copy(); nbr_minus["w_idx"] = nbr_minus["w_idx"] - 1
-#                 nbr_plus  = test_keys.copy();  nbr_plus["w_idx"]  = nbr_plus["w_idx"]  + 1
-#                 banned = pd.concat([test_keys, nbr_minus, nbr_plus], ignore_index=True)
-#                 banned = banned[banned["w_idx"] >= 0]
-
-#                 ban_idx = pd.MultiIndex.from_frame(banned[GROUP_COLS + ["w_idx"]])
-#                 train_frame = exp_df.loc[mask_train, GROUP_COLS + ["w_idx"]]
-#                 train_idx = pd.MultiIndex.from_frame(train_frame)
-#                 to_purge = train_idx.isin(ban_idx)
-#                 # clear overlapped train windows
-#                 purge_index = exp_df.loc[mask_train].index[to_purge]
-#                 if len(purge_index) > 0:
-#                     mask_train.loc[purge_index] = False
-#             # ------------------------------------------------------------------------------- # <<<
-            
-#             # Skip if no test data
-#             if mask_test.sum() == 0:
-#                 continue
-            
-#             # Prepare experimental training data
-#             exp_train = exp_df[mask_train]
-#             exp_test = exp_df[mask_test]
-            
-#             # Build training set based on whether we have baseline and experimental data
-#             if minute == 0:
-#                 # At minute 0, only use baseline data (if available)
-#                 if not has_baseline:
-#                     # No baseline and no experimental data yet - skip
-#                     continue
-#                 X_train = X_baseline
-#                 y_train = y_baseline
-            
-#             else:
-#                 # minute > 0: use experimental data (and optionally baseline)
-#                 if exp_train.empty:
-#                     # No experimental training data yet - skip
-#                     continue
-                
-#                 X_exp_train = drop_identifier_columns(exp_train).drop(columns=["condition"], errors="ignore")
-#                 y_exp_train = exp_train["condition"].values
-                
-#                 if has_baseline:
-#                     # Combine baseline + experimental
-#                     X_train = pd.concat([X_baseline, X_exp_train], ignore_index=True)
-#                     y_train = np.concatenate([y_baseline, y_exp_train])
-#                 else:
-#                     # Only experimental data
-#                     X_train = X_exp_train
-#                     y_train = y_exp_train
-            
-#             # Prepare test data
-#             X_test = drop_identifier_columns(exp_test).drop(columns=["condition"], errors="ignore")
-#             y_test = exp_test["condition"].values
-            
-#             # Ensure same features in train and test
-#             common_features = list(set(X_train.columns) & set(X_test.columns))
-#             X_train = X_train[common_features]
-#             X_test = X_test[common_features]
-            
-#             # Build and train pipeline
-#             # Build classifier kwargs safely
-#             rf_kwargs = dict(RF_PARAMS)         # don't mutate the global
-#             rf_kwargs["random_state"] = seed
-#             rf_kwargs.setdefault("n_jobs", -1)  # only set if not already present
-
-#             # Pipeline
-#             pipe = Pipeline([
-#                 ("scaler", StandardScaler()),
-#                 ("rf", RandomForestClassifier(**rf_kwargs)),
-#             ])
-
-            
-#             pipe.fit(X_train, y_train)
-#             y_pred = pipe.predict(X_test)
-            
-#             # Compute metrics
-#             results[minute]["BalancedAcc"].append(balanced_accuracy_score(y_test, y_pred))
-#             results[minute]["F1"].append(f1_score(y_test, y_pred, labels=LABELS, average="weighted"))
-#             results[minute]["Kappa"].append(cohen_kappa_score(y_test, y_pred, labels=LABELS))
-    
-#     # Save results
-#     output_data = {
-#         "name": name,
-#         "config": config,
-#         "has_baseline": has_baseline,
-#         "minutes": minutes,
-#         "results": results,
-#         "n_seeds": n_seeds,
-#         "timestamp": datetime.now().isoformat(),
-#     }
-    
-#     with open(output_path, "w") as f:
-#         json.dump(output_data, f, indent=2)
-    
-#     print(f"✓ Completed: {name}")
-    
-#     # Print summary
-#     print("\nLearning Curve Summary (Balanced Accuracy):")
-#     print(f"{'Minute':<10} {'Mean':<10} {'Std':<10} {'N':<10}")
-#     print("-" * 40)
-#     for minute in minutes:
-#         if results[minute]["BalancedAcc"]:
-#             mean_acc = np.mean(results[minute]["BalancedAcc"])
-#             std_acc = np.std(results[minute]["BalancedAcc"], ddof=1)
-#             n_samples = len(results[minute]["BalancedAcc"])
-#             print(f"{minute:<10} {mean_acc*100:.2f}%    {std_acc*100:.2f}%    {n_samples:<10}")#!/usr/bin/env python3
-
-
-def run_learning_curve_experiment(config, feature_groups, default_config, output_dir, force=False):
-    """
-    Run learning curve analysis with incremental training data.
-    NOW WITH PER-SEED FEATURE SELECTION.
-    
-    Learning curves show how model performance changes as we add more
-    training data. This is useful for understanding:
-      - How much data is needed for good performance
-      - Whether baseline data helps
-      - How quickly the model adapts to new conditions
-    
-    The experiment:
-      1. Optionally starts with baseline data (minute 0)
-      2. Incrementally adds experimental data (minutes 1, 2, 3, ...)
-      3. Tests on the remaining experimental data
-      4. Repeats across multiple random seeds
-      5. Feature selection done per-seed (not globally)
-    
-    If no baseline_groups specified, starts at minute 1 instead of minute 0.
-    
-    Normalization modes (only applied when has_baseline=False):
-      - "standard": Fit scaler on train, transform both train and test (default sklearn)
-      - "adaptive_per_trial": Compute mean/std per (participant, condition) from train,
-                              apply those stats to transform test data for that trial
-      - "adaptive_global": Compute mean/std globally from all train data,
-                          apply to all test data
-    
-    Args:
-        config: Learning curve configuration dict with:
-            - name: Experiment name
-            - baseline_groups: List of baseline feature groups (optional, can be empty)
-            - experimental_groups: List of experimental feature groups (required)
-            - minutes: List of cutoff minutes to test
-            - skip_every: Window skipping parameter (optional)
-            - n_seeds: Number of random seeds (optional)
-            - normalization_mode: "standard", "adaptive_per_trial", or "adaptive_global" (optional)
-            - feature_selection: "backward", "forward", or None (optional)
-        feature_groups: Mapping of group names to file paths
-        default_config: Default model settings
-        output_dir: Directory to save results
-        force: If True, overwrite existing results
-    """
-    name = config["name"]
-    output_path = Path(output_dir) / f"{name}.json"
-    
-    # Check if already complete
-    if output_path.exists() and not force:
-        print(f"[SKIP] {name}: already complete")
-        return
-    
-    print(f"\n{'='*60}")
-    print(f"Running Learning Curves: {name}")
-    print(f"{'='*60}")
-    
-    # Check if we have baseline data
-    has_baseline = config.get("baseline_groups") and len(config["baseline_groups"]) > 0
-    
-    # Get normalization mode (default to standard)
-    norm_mode = config.get("normalization_mode", "standard")
-    valid_modes = ["standard", "adaptive_per_trial", "adaptive_global"]
-    if norm_mode not in valid_modes:
-        raise ValueError(f"normalization_mode must be one of {valid_modes}, got '{norm_mode}'")
-    
-    # Adaptive modes only work without baseline
-    if has_baseline and norm_mode != "standard":
-        raise ValueError(
-            f"Adaptive normalization modes ('{norm_mode}') can only be used when "
-            f"baseline_groups is empty or not specified. Set has_baseline=False."
-        )
-    
-    # Get feature selection method
-    selection_method = config.get("feature_selection", default_config.get("feature_selection"))
-    
-    print(f"Normalization mode: {norm_mode}")
-    print(f"Feature selection: {selection_method if selection_method else 'None'}")
-    
-    # Load baseline data if specified
-    if has_baseline:
-        baseline_files = [feature_groups[g] for g in config["baseline_groups"]]
-        baseline_df = load_and_merge_features(baseline_files, skip_every=config.get("skip_every"))
-        print(f"Baseline data: {baseline_df.shape}")
-        
-        # Extract features for baseline (drop ID columns)
-        X_baseline = drop_identifier_columns(baseline_df).drop(columns=["condition"], errors="ignore")
-        y_baseline = baseline_df["condition"].values
-    else:
-        print("No baseline data - will start from minute 1")
-        X_baseline = None
-        y_baseline = None
-    
-    # Load experimental data
-    exp_files = [feature_groups[g] for g in config["experimental_groups"]]
-    exp_df = load_and_merge_features(exp_files, skip_every=config.get("skip_every"))
-    print(f"Experimental data: {exp_df.shape}")
-
-    if "window_index" not in exp_df.columns:
-        raise ValueError("Expected 'window_index' in experimental data.")
-    exp_df["w_idx"] = exp_df["window_index"].astype(int)
-
-    GROUP_COLS = [c for c in ["participant", "trial_id", "trial", "session"] if c in exp_df.columns]
-    if not GROUP_COLS:
-        exp_df["__all__"] = 1
-        GROUP_COLS = ["__all__"]
-    
-    # Settings
-    minutes = config["minutes"]
-    n_seeds = config.get("n_seeds", default_config.get("n_seeds", 20))
-    
-    # Results storage: results[minute][metric] = [scores across seeds]
-    results = {
-        m: {
-            "BalancedAcc": [],
-            "F1": [],
-            "Kappa": [],
-            "n_features": [],  # Track number of features selected per seed
-        }
-        for m in minutes
-    }
-    
-    # Run across seeds
-    for seed in tqdm(range(n_seeds), desc=f"{name}"):
-        for minute in minutes:
-            # Convert minutes to window index
-            # With 60s windows and 50% overlap (30s step), window_index = minute * 2
-            window_cutoff = minute * 2
-
-            # build non-overlapping TEST via parity, then purge TRAIN neighbors
-            # TEST: all windows >= cutoff that match parity (avoid test-test overlap)
-            test_parity = window_cutoff % 2
-            mask_test = (exp_df["w_idx"] >= window_cutoff) & ((exp_df["w_idx"] % 2) == test_parity)
-
-            # TRAIN: all windows before cutoff
-            mask_train = exp_df["w_idx"] < window_cutoff
-
-            # If there are test windows, purge any overlapping TRAIN windows (neighbors ±1 in same group)
-            if mask_test.any():
-                test_keys = exp_df.loc[mask_test, GROUP_COLS + ["w_idx"]].copy()
-                nbr_minus = test_keys.copy(); nbr_minus["w_idx"] = nbr_minus["w_idx"] - 1
-                nbr_plus  = test_keys.copy();  nbr_plus["w_idx"]  = nbr_plus["w_idx"]  + 1
-                banned = pd.concat([test_keys, nbr_minus, nbr_plus], ignore_index=True)
-                banned = banned[banned["w_idx"] >= 0]
-
-                ban_idx = pd.MultiIndex.from_frame(banned[GROUP_COLS + ["w_idx"]])
-                train_frame = exp_df.loc[mask_train, GROUP_COLS + ["w_idx"]]
-                train_idx = pd.MultiIndex.from_frame(train_frame)
-                to_purge = train_idx.isin(ban_idx)
-                # clear overlapped train windows
-                purge_index = exp_df.loc[mask_train].index[to_purge]
-                if len(purge_index) > 0:
-                    mask_train.loc[purge_index] = False
-            
-            # Skip if no test data
-            if mask_test.sum() == 0:
-                continue
-            
-            # Prepare experimental training data
-            exp_train = exp_df[mask_train]
-            exp_test = exp_df[mask_test]
-            
-            # Build training set based on whether we have baseline and experimental data
-            if minute == 0:
-                # At minute 0, only use baseline data (if available)
-                if not has_baseline:
-                    # No baseline and no experimental data yet - skip
-                    continue
-                X_train = X_baseline
-                y_train = y_baseline
-            
-            else:
-                # minute > 0: use experimental data (and optionally baseline)
-                if exp_train.empty:
-                    # No experimental training data yet - skip
-                    continue
-                
-                X_exp_train = drop_identifier_columns(exp_train).drop(columns=["condition"], errors="ignore")
-                y_exp_train = exp_train["condition"].values
-                
-                if has_baseline:
-                    # Combine baseline + experimental
-                    X_train = pd.concat([X_baseline, X_exp_train], ignore_index=True)
-                    y_train = np.concatenate([y_baseline, y_exp_train])
-                else:
-                    # Only experimental data
-                    X_train = X_exp_train
-                    y_train = y_exp_train
-            
-            # Prepare test data
-            X_test = drop_identifier_columns(exp_test).drop(columns=["condition"], errors="ignore")
-            y_test = exp_test["condition"].values
-            
-            # Ensure same features in train and test
-            common_features = list(set(X_train.columns) & set(X_test.columns))
-            X_train = X_train[common_features]
-            X_test = X_test[common_features]
-            
-            # *** FEATURE SELECTION PER-SEED ***
-            if selection_method == "backward":
-                selected_features, _ = backward_elimination_rf(
-                    X_train, y_train, random_state=seed
-                )
-            elif selection_method == "forward":
-                # Forward selection not implemented
-                selected_features = list(X_train.columns)
-            elif selection_method is None:
-                selected_features = list(X_train.columns)
-            else:
-                raise ValueError(f"Unknown feature_selection method: '{selection_method}'")
-            
-            if not selected_features:
-                selected_features = list(X_train.columns)
-            
-            # Apply selected features
-            X_train = X_train[selected_features]
-            X_test = X_test[selected_features]
-            
-            # Apply normalization based on mode
-            if norm_mode == "standard":
-                # Standard: fit on train, transform both
-                scaler = StandardScaler()
-                X_train_scaled = scaler.fit_transform(X_train)
-                X_test_scaled = scaler.transform(X_test)
-            
-            elif norm_mode == "adaptive_per_trial":
-                # Per-trial adaptive: compute stats per (participant, condition) from train
-                # Apply those stats to test data for that trial
-                
-                # We need to keep track of participant and condition for both train and test
-                # Add them back temporarily
-                train_with_meta = exp_train[["participant", "condition"]].copy()
-                test_with_meta = exp_test[["participant", "condition"]].copy()
-                
-                # Initialize scaled arrays
-                X_train_scaled = np.zeros_like(X_train.values, dtype=float)
-                X_test_scaled = np.zeros_like(X_test.values, dtype=float)
-                
-                # Get unique (participant, condition) combinations in training data
-                train_groups = train_with_meta.groupby(["participant", "condition"]).groups
-                
-                for (participant, condition), train_indices in train_groups.items():
-                    # Get training data for this trial
-                    trial_train_mask = (train_with_meta["participant"] == participant) & \
-                                      (train_with_meta["condition"] == condition)
-                    trial_train_data = X_train.values[trial_train_mask]
-                    
-                    # Compute mean and std from training data
-                    train_mean = np.mean(trial_train_data, axis=0)
-                    train_std = np.std(trial_train_data, axis=0)
-                    train_std[train_std == 0] = 1.0  # Avoid division by zero
-                    
-                    # Transform training data for this trial
-                    X_train_scaled[trial_train_mask] = (trial_train_data - train_mean) / train_std
-                    
-                    # Find corresponding test data for this trial
-                    trial_test_mask = (test_with_meta["participant"] == participant) & \
-                                     (test_with_meta["condition"] == condition)
-                    
-                    if trial_test_mask.any():
-                        trial_test_data = X_test.values[trial_test_mask]
-                        # Apply training stats to test data
-                        X_test_scaled[trial_test_mask] = (trial_test_data - train_mean) / train_std
-                
-                # Handle any test trials that don't have corresponding training data
-                # (use global stats as fallback)
-                test_groups = test_with_meta.groupby(["participant", "condition"]).groups
-                for (participant, condition), test_indices in test_groups.items():
-                    if (participant, condition) not in train_groups:
-                        # Fallback to global training stats
-                        global_mean = np.mean(X_train.values, axis=0)
-                        global_std = np.std(X_train.values, axis=0)
-                        global_std[global_std == 0] = 1.0
-                        
-                        trial_test_mask = (test_with_meta["participant"] == participant) & \
-                                         (test_with_meta["condition"] == condition)
-                        trial_test_data = X_test.values[trial_test_mask]
-                        X_test_scaled[trial_test_mask] = (trial_test_data - global_mean) / global_std
-            
-            elif norm_mode == "adaptive_global":
-                # Global adaptive: compute stats from all training data
-                # Apply to all test data
-                train_mean = np.mean(X_train.values, axis=0)
-                train_std = np.std(X_train.values, axis=0)
-                train_std[train_std == 0] = 1.0  # Avoid division by zero
-                
-                # Transform both train and test using training stats
-                X_train_scaled = (X_train.values - train_mean) / train_std
-                X_test_scaled = (X_test.values - train_mean) / train_std
-            
-            # Build and train classifier
-            rf_kwargs = dict(RF_PARAMS)
-            rf_kwargs["random_state"] = seed
-            rf_kwargs.setdefault("n_jobs", -1)
-            
-            clf = RandomForestClassifier(**rf_kwargs)
-            clf.fit(X_train_scaled, y_train)
-            y_pred = clf.predict(X_test_scaled)
-            
-            # Compute metrics
-            results[minute]["BalancedAcc"].append(balanced_accuracy_score(y_test, y_pred))
-            results[minute]["F1"].append(f1_score(y_test, y_pred, labels=LABELS, average="weighted"))
-            results[minute]["Kappa"].append(cohen_kappa_score(y_test, y_pred, labels=LABELS))
-            results[minute]["n_features"].append(len(selected_features))
-    
-    # Save results
-    output_data = {
-        "name": name,
-        "config": config,
-        "has_baseline": has_baseline,
-        "normalization_mode": norm_mode,
-        "feature_selection": selection_method,
-        "minutes": minutes,
-        "results": results,
-        "n_seeds": n_seeds,
-        "timestamp": datetime.now().isoformat(),
-    }
-    
-    with open(output_path, "w") as f:
-        json.dump(output_data, f, indent=2)
-    
-    print(f"✓ Completed: {name}")
-    
-    # Print summary
-    print(f"\nLearning Curve Summary (Balanced Accuracy) - {norm_mode}:")
-    print(f"{'Minute':<10} {'Mean':<10} {'Std':<10} {'N':<10} {'Features':<15}")
-    print("-" * 60)
-    for minute in minutes:
-        if results[minute]["BalancedAcc"]:
-            mean_acc = np.mean(results[minute]["BalancedAcc"])
-            std_acc = np.std(results[minute]["BalancedAcc"], ddof=1)
-            n_samples = len(results[minute]["BalancedAcc"])
-            mean_feats = np.mean(results[minute]["n_features"])
-            std_feats = np.std(results[minute]["n_features"], ddof=1)
-            print(f"{minute:<10} {mean_acc*100:.2f}%    {std_acc*100:.2f}%    {n_samples:<10} "
-                  f"{mean_feats:.1f} ± {std_feats:.1f}")

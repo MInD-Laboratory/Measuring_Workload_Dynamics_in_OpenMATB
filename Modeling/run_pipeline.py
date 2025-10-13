@@ -66,7 +66,7 @@ EXPERIMENT_CONFIG = {
     # 1. Linear vs RQA vs Combined (Procrustes & None)
     # ==========================================================
     "feature_comparison": {
-        "enabled": True,
+        "enabled": False,
         "description": "Compare Procrustes vs None for linear, RQA, and combined features",
         "experiments": [
             # -------------------------------
@@ -74,24 +74,24 @@ EXPERIMENT_CONFIG = {
             # -------------------------------
             {"name": "linear_procrustes_random", "feature_groups": ["procrustes_linear_exp"], "split_strategy": "random"},
             {"name": "linear_procrustes_participant", "feature_groups": ["procrustes_linear_exp"], "split_strategy": "participant"},
-            {"name": "linear_none_random", "feature_groups": ["none_linear_exp"], "split_strategy": "random"},
-            {"name": "linear_none_participant", "feature_groups": ["none_linear_exp"], "split_strategy": "participant"},
+            # {"name": "linear_none_random", "feature_groups": ["none_linear_exp"], "split_strategy": "random"},
+            # {"name": "linear_none_participant", "feature_groups": ["none_linear_exp"], "split_strategy": "participant"},
 
             # -------------------------------
             # RQA only
             # -------------------------------
             {"name": "rqa_procrustes_random", "feature_groups": ["procrustes_rqa_exp"], "split_strategy": "random"},
             {"name": "rqa_procrustes_participant", "feature_groups": ["procrustes_rqa_exp"], "split_strategy": "participant"},
-            {"name": "rqa_none_random", "feature_groups": ["none_rqa_exp"], "split_strategy": "random"},
-            {"name": "rqa_none_participant", "feature_groups": ["none_rqa_exp"], "split_strategy": "participant"},
+            # {"name": "rqa_none_random", "feature_groups": ["none_rqa_exp"], "split_strategy": "random"},
+            # {"name": "rqa_none_participant", "feature_groups": ["none_rqa_exp"], "split_strategy": "participant"},
 
-            # -------------------------------
-            # Combined linear + RQA
-            # -------------------------------
+            # # -------------------------------
+            # # Combined linear + RQA
+            # # -------------------------------
             {"name": "combined_procrustes_random", "feature_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"], "split_strategy": "random"},
             {"name": "combined_procrustes_participant", "feature_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"], "split_strategy": "participant"},
-            {"name": "combined_none_random", "feature_groups": ["none_linear_exp", "none_rqa_exp"], "split_strategy": "random"},
-            {"name": "combined_none_participant", "feature_groups": ["none_linear_exp", "none_rqa_exp"], "split_strategy": "participant"},
+            # {"name": "combined_none_random", "feature_groups": ["none_linear_exp", "none_rqa_exp"], "split_strategy": "random"},
+            # {"name": "combined_none_participant", "feature_groups": ["none_linear_exp", "none_rqa_exp"], "split_strategy": "participant"},
         ],
     },
 
@@ -99,11 +99,11 @@ EXPERIMENT_CONFIG = {
     # 2. Performance Metrics
     # ==========================================================
     "performance_metrics": {
-        "enabled": True,
+        "enabled": False,
         "description": "Evaluate performance metrics alone",
         "experiments": [
             {"name": "performance_random", "feature_groups": ["performance_exp"], "split_strategy": "random"},
-            {"name": "performance_participant", "feature_groups": ["performance_exp"], "split_strategy": "participant"},
+            #{"name": "performance_participant", "feature_groups": ["performance_exp"], "split_strategy": "participant"},
         ],
     },
 }
@@ -132,121 +132,121 @@ LEARNING_CURVES_CONFIG = {
             "normalization_mode": "standard",  # Add this line
         },
 
-        {
-            "name": "lc_procrustes_linear_no_baseline",
-            "baseline_groups": [],
-            "experimental_groups": ["procrustes_linear_exp"],
-            "minutes": list(range(0, 8)),
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "standard",  # Add this line
-        },
+        # {
+        #     "name": "lc_procrustes_linear_no_baseline",
+        #     "baseline_groups": [],
+        #     "experimental_groups": ["procrustes_linear_exp"],
+        #     "minutes": list(range(0, 8)),
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "standard",  # Add this line
+        # },
 
-        {
-            "name": "lc_procrustes_linear_w_baseline",
-            "baseline_groups": ["procrustes_linear_bsl"],
-            "experimental_groups": ["procrustes_linear_exp"],
-            "minutes": list(range(0, 8)),
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "standard",  # Add this line (only standard allowed with baseline)
-        },
+        # {
+        #     "name": "lc_procrustes_linear_w_baseline",
+        #     "baseline_groups": ["procrustes_linear_bsl"],
+        #     "experimental_groups": ["procrustes_linear_exp"],
+        #     "minutes": list(range(0, 8)),
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "standard",  # Add this line (only standard allowed with baseline)
+        # },
 
-        {
-            "name": "lc_procrustes_linear_perf_w_baseline",
-            "baseline_groups": ["procrustes_linear_bsl", "performance_bsl"],
-            "experimental_groups": ["procrustes_linear_exp",  "performance_exp"],
-            "minutes": list(range(0, 8)),
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "standard",  # Add this line (only standard allowed with baseline)
-        },
+        # {
+        #     "name": "lc_procrustes_linear_perf_w_baseline",
+        #     "baseline_groups": ["procrustes_linear_bsl", "performance_bsl"],
+        #     "experimental_groups": ["procrustes_linear_exp",  "performance_exp"],
+        #     "minutes": list(range(0, 8)),
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "standard",  # Add this line (only standard allowed with baseline)
+        # },
 
-        {
-            "name": "lc_procrustes_linear_rec_with_baseline",
-            "baseline_groups": ["procrustes_linear_bsl", "procrustes_rqa_bsl"],
-            "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
-            "minutes": list(range(0, 8)),
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "standard",  # Add this line (only standard allowed with baseline)
-        },
+        # {
+        #     "name": "lc_procrustes_linear_rec_with_baseline",
+        #     "baseline_groups": ["procrustes_linear_bsl", "procrustes_rqa_bsl"],
+        #     "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
+        #     "minutes": list(range(0, 8)),
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "standard",  # Add this line (only standard allowed with baseline)
+        # },
 
-        {
-            "name": "lc_procrustes_linear_rec_no_baseline",
-            "baseline_groups": [],
-            "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
-            "minutes": list(range(1, 8)),
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "standard",  # Add this line
-        },
+        # {
+        #     "name": "lc_procrustes_linear_rec_no_baseline",
+        #     "baseline_groups": [],
+        #     "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
+        #     "minutes": list(range(1, 8)),
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "standard",  # Add this line
+        # },
 
-        # ==========================================================
-        # ADAPTIVE PER-TRIAL NORMALIZATION (new experiments)
-        # ==========================================================
-        {
-            "name": "lc_procrustes_linear_perf_no_baseline_adaptive_per_trial",
-            "baseline_groups": [],
-            "experimental_groups": ["procrustes_linear_exp", "performance_exp"],
-            "minutes": list(range(1, 8)),  # Start from minute 1 (no baseline allowed)
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "adaptive_per_trial",
-        },
+        # # ==========================================================
+        # # ADAPTIVE PER-TRIAL NORMALIZATION (new experiments)
+        # # ==========================================================
+        # {
+        #     "name": "lc_procrustes_linear_perf_no_baseline_adaptive_per_trial",
+        #     "baseline_groups": [],
+        #     "experimental_groups": ["procrustes_linear_exp", "performance_exp"],
+        #     "minutes": list(range(1, 8)),  # Start from minute 1 (no baseline allowed)
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "adaptive_per_trial",
+        # },
 
-        {
-            "name": "lc_procrustes_linear_no_baseline_adaptive_per_trial",
-            "baseline_groups": [],
-            "experimental_groups": ["procrustes_linear_exp"],
-            "minutes": list(range(1, 8)),
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "adaptive_per_trial",
-        },
+        # {
+        #     "name": "lc_procrustes_linear_no_baseline_adaptive_per_trial",
+        #     "baseline_groups": [],
+        #     "experimental_groups": ["procrustes_linear_exp"],
+        #     "minutes": list(range(1, 8)),
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "adaptive_per_trial",
+        # },
 
-        {
-            "name": "lc_procrustes_linear_rec_no_baseline_adaptive_per_trial",
-            "baseline_groups": [],
-            "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
-            "minutes": list(range(1, 8)),
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "adaptive_per_trial",
-        },
+        # {
+        #     "name": "lc_procrustes_linear_rec_no_baseline_adaptive_per_trial",
+        #     "baseline_groups": [],
+        #     "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
+        #     "minutes": list(range(1, 8)),
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "adaptive_per_trial",
+        # },
 
-        # ==========================================================
-        # ADAPTIVE GLOBAL NORMALIZATION (new experiments)
-        # ==========================================================
-        {
-            "name": "lc_procrustes_linear_perf_no_baseline_adaptive_global",
-            "baseline_groups": [],
-            "experimental_groups": ["procrustes_linear_exp", "performance_exp"],
-            "minutes": list(range(1, 8)),  # Start from minute 1 (no baseline allowed)
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "adaptive_global",
-        },
+        # # ==========================================================
+        # # ADAPTIVE GLOBAL NORMALIZATION (new experiments)
+        # # ==========================================================
+        # {
+        #     "name": "lc_procrustes_linear_perf_no_baseline_adaptive_global",
+        #     "baseline_groups": [],
+        #     "experimental_groups": ["procrustes_linear_exp", "performance_exp"],
+        #     "minutes": list(range(1, 8)),  # Start from minute 1 (no baseline allowed)
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "adaptive_global",
+        # },
 
-        {
-            "name": "lc_procrustes_linear_no_baseline_adaptive_global",
-            "baseline_groups": [],
-            "experimental_groups": ["procrustes_linear_exp"],
-            "minutes": list(range(1, 8)),
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "adaptive_global",
-        },
+        # {
+        #     "name": "lc_procrustes_linear_no_baseline_adaptive_global",
+        #     "baseline_groups": [],
+        #     "experimental_groups": ["procrustes_linear_exp"],
+        #     "minutes": list(range(1, 8)),
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "adaptive_global",
+        # },
 
-        {
-            "name": "lc_procrustes_linear_rec_no_baseline_adaptive_global",
-            "baseline_groups": [],
-            "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
-            "minutes": list(range(1, 8)),
-            "skip_every": 2,
-            "n_seeds": 20,
-            "normalization_mode": "adaptive_global",
-        },
+        # {
+        #     "name": "lc_procrustes_linear_rec_no_baseline_adaptive_global",
+        #     "baseline_groups": [],
+        #     "experimental_groups": ["procrustes_linear_exp", "procrustes_rqa_exp"],
+        #     "minutes": list(range(1, 8)),
+        #     "skip_every": 2,
+        #     "n_seeds": 20,
+        #     "normalization_mode": "adaptive_global",
+       #},
 
     ],
 }
