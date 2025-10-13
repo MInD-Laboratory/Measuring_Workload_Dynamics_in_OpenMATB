@@ -46,8 +46,8 @@ class Config:
     # Directory paths - can be overridden by environment variables
     # Use paths relative to the Pose directory (where this config file is located)
     _BASE_DIR: str = str(Path(__file__).parent.parent)  # Pose directory
-    RAW_DIR: str = os.getenv("POSE_RAW_DIR", str(Path(_BASE_DIR) / "data" / "raw_data" / "baseline_pose"))
-    OUT_BASE: str = os.getenv("POSE_OUT_BASE", str(Path(_BASE_DIR) / "data" / "processed_data" / "baseline"))
+    RAW_DIR: str = os.getenv("POSE_RAW_DIR", str(Path(_BASE_DIR) / "data" / "raw_data" / "experimental_pose"))
+    OUT_BASE: str = os.getenv("POSE_OUT_BASE", str(Path(_BASE_DIR) / "data" / "processed_data" / "experimental"))
 
     # Participant info file - can be overridden by environment variable
     PARTICIPANT_INFO_FILE: str = os.getenv("PARTICIPANT_INFO_FILE", "participant_info.csv")
@@ -85,11 +85,11 @@ CFG = Config()
 # These flags control which processing steps are executed in the pipeline
 
 # Core processing steps
-RUN_FILTER          = True  # Apply Butterworth low-pass filter to smooth signals
-RUN_MASK            = True  # Mask low-confidence landmarks
-RUN_INTERP_FILTER   = True  # Interpolate and filter masked regions
-RUN_NORM            = True  # Normalize coordinates (centering and scaling)
-RUN_TEMPLATES       = True  # Generate participant-specific templates
+RUN_FILTER          = False  # Apply Butterworth low-pass filter to smooth signals
+RUN_MASK            = False  # Mask low-confidence landmarks
+RUN_INTERP_FILTER   = False  # Interpolate and filter masked regions
+RUN_NORM            = False  # Normalize coordinates (centering and scaling)
+RUN_TEMPLATES       = False  # Generate participant-specific templates
 RUN_LINEAR          = True  # Run linear regression analysis
 
 # Feature extraction for different normalization methods
