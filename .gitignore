@@ -17,12 +17,49 @@ Performance/figs/
 Performance/tables/
 Pose/data/raw_data
 Pose/figs/
+Pose/RQAmain/
+venv/
 
-# Ignore everything under processed_data except linear_metrics
+# Ignore everything under processed_data except final linear_metrics CSV files
 Pose/data/processed_data/**
 !Pose/data/processed_data/experimental/
 !Pose/data/processed_data/experimental/linear_metrics/
+!Pose/data/processed_data/experimental/linear_metrics/*.csv
 !Pose/data/processed_data/baseline/
 !Pose/data/processed_data/baseline/linear_metrics/
+!Pose/data/processed_data/baseline/linear_metrics/*.csv
 
 Pose/data/processed_data_windowed_norm/
+
+# Allow final RQA feature files but ignore intermediate processing
+Pose/data/rqa/**
+!Pose/data/rqa/*_rqa_crqa.csv
+
+# Allow baseline aggregate feature files for Model B
+!Modeling/baseline_features/
+!Modeling/baseline_features/*.csv
+Pose/RQAmain/__int__.py
+Pose/RQAmain/analysisExamples.ipynb
+Pose/RQAmain/autoRQA.py
+Pose/RQAmain/crossRQA.py
+Pose/RQAmain/diagonalRP.py
+Pose/RQAmain/LICENSE
+Pose/RQAmain/multivariateRQA.py
+Pose/RQAmain/pyproject.toml
+Pose/RQAmain/README.md
+Pose/RQAmain/setup.py
+Pose/RQAmain/exampleData/Elvis.csv
+Pose/RQAmain/exampleData/lorenz_chaotic_xy.csv
+Pose/RQAmain/exampleData/lorenz_chaotic_xyz_2.csv
+Pose/RQAmain/exampleData/lorenz_chaotic_xyz.csv
+Pose/RQAmain/exampleData/lorenz_hyperchaotic_xyz.csv
+Pose/RQAmain/exampleData/PostureData.csv
+Pose/RQAmain/exampleData/README.md
+Pose/RQAmain/exampleData/RockingChairData.csv
+Pose/RQAmain/exampleData/WhiteNoiseData.csv
+Pose/RQAmain/utils/__int__.py
+Pose/RQAmain/utils/filter_utils.py
+Pose/RQAmain/utils/norm_utils.py
+Pose/RQAmain/utils/output_io_utils.py
+Pose/RQAmain/utils/plot_utils.py
+Pose/RQAmain/utils/rqa_utils.cpp

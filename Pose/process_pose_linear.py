@@ -143,6 +143,37 @@ def load_existing_normalized_data(files: List[Path]) -> Tuple[Dict, Dict]:
     return perfile_data, perfile_meta
 
 
+def load_existing_templates() -> Tuple[Optional[pd.DataFrame], Dict[str, pd.DataFrame]]:
+    """Load existing templates from disk for step 7-8.
+
+    Returns:
+        Tuple of (global_template, participant_templates)
+    """
+    template_dir = Path(CFG.OUT_BASE) / "templates"
+
+    # Load global template
+    global_template = None
+    global_template_path = template_dir / "global_template.csv"
+    if global_template_path.exists():
+        global_template = pd.read_csv(global_template_path)
+        print(f"  Loaded global template: {global_template.shape}")
+    else:
+        print(f"  Warning: Global template not found at {global_template_path}")
+
+    # Load participant templates
+    participant_templates = {}
+    if template_dir.exists():
+        for template_path in template_dir.glob("participant_*_template.csv"):
+            # Extract participant ID from filename: participant_<PID>_template.csv
+            pid = template_path.stem.replace("participant_", "").replace("_template", "")
+            participant_templates[pid] = pd.read_csv(template_path)
+        print(f"  Loaded {len(participant_templates)} participant templates")
+    else:
+        print(f"  Warning: Template directory not found at {template_dir}")
+
+    return global_template, participant_templates
+
+
 # ================================================================================================
 # STEP 1: LOAD RAW DATA
 # ================================================================================================
@@ -693,8 +724,12 @@ def step_8_compute_linear_metrics() -> None:
 # ================================================================================================
 # MAIN PIPELINE FUNCTION
 # ================================================================================================
-def run_pose_processing_pipeline() -> None:
-    """Main pipeline function that orchestrates all 8 steps without participant CSVs."""
+def run_pose_processing_pipeline(start_step: int = 1) -> None:
+    """Main pipeline function that orchestrates all 8 steps without participant CSVs.
+
+    Args:
+        start_step: Step number to start from (1-8). Previous steps will be skipped.
+    """
 
     print("="*80)
     print("POSE PROCESSING PIPELINE")
@@ -706,6 +741,7 @@ def run_pose_processing_pipeline() -> None:
     print(f"  OUT_BASE: {CFG.OUT_BASE}")
     print(f"  CONF_THRESH: {CFG.CONF_THRESH}")
     print(f"  OVERWRITE: {OVERWRITE}")
+    print(f"  START_STEP: {start_step}")
 
     # Ensure output directories exist
     ensure_dirs()
@@ -714,61 +750,110 @@ def run_pose_processing_pipeline() -> None:
     files = load_raw_files()
     print(f"✓ Found {len(files)} pose CSV files")
 
-    # Steps 1–5: either reuse existing normalized outputs or (re)compute them
-    if not OVERWRITE and check_steps_1_5_complete(files):
-        print(f"\nSteps 1-5 already complete (found all {len(files)} normalized condition-based files)")
-        print("Loading existing data and proceeding to steps 6-8...")
+    # Initialize variables that may be needed later
+    normalized_data = None
+    perfile_meta = None
+    global_template = None
+    participant_templates = {}
 
-        # Load existing normalized data + metadata (participant, condition parsed from filename)
+    # ============================================================================
+    # STEPS 1-5: Data preprocessing
+    # ============================================================================
+    if start_step <= 5:
+        # Steps 1–5: either reuse existing normalized outputs or (re)compute them
+        if not OVERWRITE and start_step == 1 and check_steps_1_5_complete(files):
+            print(f"\nSteps 1-5 already complete (found all {len(files)} normalized condition-based files)")
+            print("Loading existing data and proceeding to steps 6-8...")
+
+            # Load existing normalized data + metadata (participant, condition parsed from filename)
+            perfile_data, perfile_meta = load_existing_normalized_data(files)
+            normalized_data = {fname: dct["norm"] for fname, dct in perfile_data.items()}
+
+        else:
+            if OVERWRITE:
+                print("\nOVERWRITE=True: Running steps 1-5 regardless of existing files")
+            else:
+                print(f"\nRunning steps {start_step}-5...")
+
+            # 1) Load raw data
+            if start_step <= 1:
+                raw_data = step_1_load_raw_data(files)
+                if not raw_data:
+                    print("No data loaded. Exiting.")
+                    return
+            else:
+                print(f"\n[SKIP] Step 1: Starting from step {start_step}")
+                raw_data = {}
+
+            # 2) Filter to relevant keypoints
+            if start_step <= 2:
+                filtered_data, perfile_meta = step_2_filter_keypoints(raw_data)
+                if not filtered_data:
+                    print("No data after filtering. Exiting.")
+                    return
+            else:
+                print(f"\n[SKIP] Step 2: Starting from step {start_step}")
+                filtered_data = {}
+
+            # 3) Mask low-confidence landmarks
+            if start_step <= 3:
+                masked_data, _ = step_3_mask_low_confidence(filtered_data, perfile_meta)
+                if not masked_data:
+                    print("No data after masking. Exiting.")
+                    return
+            else:
+                print(f"\n[SKIP] Step 3: Starting from step {start_step}")
+                masked_data = {}
+
+            # 4) Interpolate short gaps + Butterworth filter
+            if start_step <= 4:
+                interp_filtered_data = step_4_interpolate_filter(masked_data, perfile_meta)
+                if not interp_filtered_data:
+                    print("No data after interpolation/filtering. Exiting.")
+                    return
+            else:
+                print(f"\n[SKIP] Step 4: Starting from step {start_step}")
+                interp_filtered_data = {}
+
+            # 5) Normalize to screen coordinates
+            if start_step <= 5:
+                normalized_data = step_5_normalize_coordinates(interp_filtered_data, perfile_meta)
+                if not normalized_data:
+                    print("No data after normalization. Exiting.")
+                    return
+    else:
+        # Starting from step 6 or later - load existing normalized data
+        print(f"\n[SKIP] Steps 1-5: Starting from step {start_step}")
+        print("Loading existing normalized data from disk...")
         perfile_data, perfile_meta = load_existing_normalized_data(files)
         normalized_data = {fname: dct["norm"] for fname, dct in perfile_data.items()}
 
+    # ============================================================================
+    # STEP 6: Build templates
+    # ============================================================================
+    if start_step <= 6:
+        global_template, participant_templates = step_6_build_templates(normalized_data, perfile_meta)
     else:
-        if OVERWRITE:
-            print("\nOVERWRITE=True: Running steps 1-5 regardless of existing files")
-        else:
-            print("\nSteps 1-5 needed: Missing some condition-based normalized files")
+        # Starting from step 7 or 8 - load existing templates
+        print(f"\n[SKIP] Step 6: Starting from step {start_step}")
+        print("Loading existing templates from disk...")
+        global_template, participant_templates = load_existing_templates()
 
-        # 1) Load raw data
-        raw_data = step_1_load_raw_data(files)
-        if not raw_data:
-            print("No data loaded. Exiting.")
-            return
+    # ============================================================================
+    # STEP 7: Extract features
+    # ============================================================================
+    if start_step <= 7:
+        step_7_extract_features(normalized_data, perfile_meta, global_template, participant_templates)
+    else:
+        print(f"\n[SKIP] Step 7: Starting from step {start_step}")
 
-        # 2) Filter to relevant keypoints (creates perfile_meta with participant/condition from filename)
-        filtered_data, perfile_meta = step_2_filter_keypoints(raw_data)
-        if not filtered_data:
-            print("No data after filtering. Exiting.")
-            return
-
-        # 3) Mask low-confidence landmarks
-        masked_data, masking_stats = step_3_mask_low_confidence(filtered_data, perfile_meta)
-        if not masked_data:
-            print("No data after masking. Exiting.")
-            return
-
-        # 4) Interpolate short gaps + Butterworth filter
-        interp_filtered_data = step_4_interpolate_filter(masked_data, perfile_meta)
-        if not interp_filtered_data:
-            print("No data after interpolation/filtering. Exiting.")
-            return
-
-        # 5) Normalize to screen coordinates
-        normalized_data = step_5_normalize_coordinates(interp_filtered_data, perfile_meta)
-        if not normalized_data:
-            print("No data after normalization. Exiting.")
-            return
-
-    # Steps 6–8 always run
-
-    # 6) Build templates (global + per-participant) based on parsed metadata
-    global_template, participant_templates = step_6_build_templates(normalized_data, perfile_meta)
-
-    # 7) Extract windowed features (Procrustes global/participant + original)
-    step_7_extract_features(normalized_data, perfile_meta, global_template, participant_templates)
-
-    # 8) Compute interocular-scaled linear metrics (vel, acc, RMS) from per-frame data
-    step_8_compute_linear_metrics()
+    # ============================================================================
+    # STEP 8: Compute linear metrics
+    # ============================================================================
+    if start_step <= 8:
+        step_8_compute_linear_metrics()
+    else:
+        print(f"\n[SKIP] Step 8: Invalid start_step {start_step}")
 
     # Save processing summary
     summary = {
@@ -781,11 +866,12 @@ def run_pose_processing_pipeline() -> None:
             "RUN_FEATURES_PROCRUSTES_PARTICIPANT": RUN_FEATURES_PROCRUSTES_PARTICIPANT,
             "RUN_FEATURES_ORIGINAL": RUN_FEATURES_ORIGINAL,
             "RUN_LINEAR": RUN_LINEAR,
-            "OVERWRITE": OVERWRITE, "OVERWRITE_TEMPLATES": OVERWRITE_TEMPLATES
+            "OVERWRITE": OVERWRITE, "OVERWRITE_TEMPLATES": OVERWRITE_TEMPLATES,
+            "START_STEP": start_step
         },
         "files_processed": len(files),
-        "participants": len({meta["participant"] for meta in perfile_meta.values()}),
-        "conditions": len({meta["condition"] for meta in perfile_meta.values()})
+        "participants": len({meta["participant"] for meta in perfile_meta.values()}) if perfile_meta else 0,
+        "conditions": len({meta["condition"] for meta in perfile_meta.values()}) if perfile_meta else 0
     }
 
     summary_path = Path(CFG.OUT_BASE) / "processing_summary.json"
@@ -822,6 +908,16 @@ Steps:
 
 The pipeline automatically skips steps 1-5 if condition-based normalized
 files already exist (unless --overwrite is specified).
+
+Use --start-step to skip earlier steps:
+  --start-step 6  : Skip steps 1-5, load normalized data from disk
+  --start-step 7  : Skip steps 1-6, load normalized data + templates from disk
+  --start-step 8  : Skip steps 1-7, only compute linear metrics from per-frame data
+
+Examples:
+  python process_pose_linear.py                  # Run all steps (auto-skip if data exists)
+  python process_pose_linear.py --start-step 8   # Only recompute linear metrics
+  python process_pose_linear.py --overwrite      # Force reprocess steps 1-5
         """
     )
 
@@ -829,6 +925,14 @@ files already exist (unless --overwrite is specified).
         "--overwrite",
         action="store_true",
         help="Force reprocessing of steps 1-5 even if outputs exist"
+    )
+
+    parser.add_argument(
+        "--start-step",
+        type=int,
+        choices=[1, 2, 3, 4, 5, 6, 7, 8],
+        default=1,
+        help="Start pipeline from specified step (1-8). Steps before this will be skipped and data loaded from disk where needed."
     )
 
     args = parser.parse_args()
@@ -840,4 +944,4 @@ files already exist (unless --overwrite is specified).
         globals()["OVERWRITE"] = True
 
     # Run the pipeline
-    run_pose_processing_pipeline()
+    run_pose_processing_pipeline(start_step=args.start_step)

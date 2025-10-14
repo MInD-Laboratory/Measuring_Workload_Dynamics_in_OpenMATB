@@ -115,7 +115,7 @@ Condition codes: L (Low), M (Moderate), H (High)
 ### 0. Download Data from OSF
 
 Download the **raw OpenPose CSV files** from the project repository:
-🔗 [https://osf.io/dzgsv/](https://osf.io/dzgsv/)
+[https://osf.io/dzgsv/](https://osf.io/dzgsv/)
 
 1. Extract the downloaded archive (it contains two folders: `experimental_pose` and `baseline_pose`).
 2. Place these folders inside your local project directory at:
@@ -295,4 +295,4 @@ For statistical analysis (notebooks):
 
 For RQA:
 
-RQA package (included in rqa/ submodule)
+RQA package (included in rqa/ submodule) - A Python implementation of univariate and multivariate recurrence quantification analysis methods for analyzing temporal dynamics and nonlinear patterns in time series data.

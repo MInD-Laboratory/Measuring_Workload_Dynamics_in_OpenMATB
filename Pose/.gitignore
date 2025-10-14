@@ -90,4 +90,16 @@ dmypy.json
 # macOS
 .DS_Store
 
-data/
+# Ignore raw data and intermediate processing files
+data/raw_data/
+data/processed_data/**
+!data/processed_data/experimental/
+!data/processed_data/experimental/linear_metrics/
+!data/processed_data/experimental/linear_metrics/*.csv
+!data/processed_data/baseline/
+!data/processed_data/baseline/linear_metrics/
+!data/processed_data/baseline/linear_metrics/*.csv
+
+# Allow final RQA feature files only
+data/rqa/**
+!data/rqa/*_rqa_crqa.csv

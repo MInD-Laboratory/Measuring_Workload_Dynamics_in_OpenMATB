@@ -8,7 +8,7 @@ import math
 import numpy as np
 from typing import Tuple
 
-def procrustes_frame_to_template(frame_xy: np.ndarray, templ_xy: np.ndarray, available_mask: np.ndarray) -> Tuple[bool, float, float, float, np.ndarray, np.ndarray]:
+def procrustes_frame_to_template(frame_xy: np.ndarray, templ_xy: np.ndarray, available_mask: np.ndarray) -> Tuple[bool, float, float, float, float, np.ndarray, np.ndarray]:
     """Align frame landmarks to template using Procrustes analysis.
 
     Performs Procrustes superimposition to find the optimal rigid transformation
@@ -23,7 +23,8 @@ def procrustes_frame_to_template(frame_xy: np.ndarray, templ_xy: np.ndarray, ava
     Returns:
         Tuple containing:
         - success: True if alignment succeeded, False if insufficient landmarks
-        - scale: Scaling factor applied to align shapes
+        - sx: Scaling factor in x direction
+        - sy: Scaling factor in y direction
         - tx: Translation in x direction
         - ty: Translation in y direction
         - R: 2x2 rotation matrix
@@ -43,8 +44,8 @@ def procrustes_frame_to_template(frame_xy: np.ndarray, templ_xy: np.ndarray, ava
 
     # Need at least 3 points for meaningful alignment
     if idx.size < 3:
-        # Return failure flag and NaN values for all outputs
-        return False, np.nan, np.nan, np.nan, np.full((2,2), np.nan), np.full_like(frame_xy, np.nan)
+        # Return failure flag and NaN values for all outputs (sx, sy, tx, ty, R, Xtrans)
+        return False, np.nan, np.nan, np.nan, np.nan, np.full((2,2), np.nan), np.full_like(frame_xy, np.nan)
 
     # Extract only available landmarks from both frame and template
     X = frame_xy[idx, :]  # Source points

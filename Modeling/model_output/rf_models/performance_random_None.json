@@ -1,0 +1,70 @@
+{
+  "name": "performance_random",
+  "config": {
+    "n_seeds": 15,
+    "feature_selection": "None",
+    "selection_level": "metric",
+    "selection_stopping": "drop",
+    "use_pca": false,
+    "pca_variance": 0.95,
+    "write_cm": true,
+    "tune_hyperparameters": false,
+    "tune_n_iter": 30,
+    "tune_cv_folds": 5,
+    "name": "performance_random",
+    "feature_groups": [
+      "performance_exp"
+    ],
+    "split_strategy": "random"
+  },
+  "metrics": {
+    "test_acc_mean": 0.5421188630490956,
+    "test_acc_std": 0.018812667538648124,
+    "test_bal_acc_mean": 0.5413971483220308,
+    "test_bal_acc_std": 0.018824828012969114,
+    "test_f1_mean": 0.5368792887983665,
+    "test_f1_std": 0.018905881588603762,
+    "test_kappa_mean": 0.3130099508576599,
+    "test_kappa_std": 0.02822239802332285,
+    "test_precision_L_mean": 0.5491551787111121,
+    "test_precision_L_std": 0.018030927914789635,
+    "test_recall_L_mean": 0.5271604938271605,
+    "test_recall_L_std": 0.031684427293471464,
+    "test_f1_L_mean": 0.5373798686875283,
+    "test_f1_L_std": 0.01925410626554549,
+    "test_precision_M_mean": 0.427753893046885,
+    "test_precision_M_std": 0.025361734353913583,
+    "test_recall_M_mean": 0.38622848200312987,
+    "test_recall_M_std": 0.03166674082870934,
+    "test_f1_M_mean": 0.4056336533246435,
+    "test_f1_M_std": 0.027111325777189475,
+    "test_precision_H_mean": 0.6266140205146242,
+    "test_precision_H_std": 0.026079885939935748,
+    "test_recall_H_mean": 0.7108024691358023,
+    "test_recall_H_std": 0.03455057514897485,
+    "test_f1_H_mean": 0.6658014883346813,
+    "test_f1_H_std": 0.026651027324581102
+  },
+  "confusion_matrix": [
+    [
+      52.716049382716044,
+      31.85185185185185,
+      15.432098765432094
+    ],
+    [
+      34.02190923317684,
+      38.62284820031299,
+      27.35524256651017
+    ],
+    [
+      9.814814814814813,
+      19.104938271604933,
+      71.08024691358024
+    ]
+  ],
+  "selected_features": [],
+  "tuned_rf_params": {},
+  "n_features": 1,
+  "n_seeds": 15,
+  "timestamp": "2025-10-14T11:50:50.880230"
+}

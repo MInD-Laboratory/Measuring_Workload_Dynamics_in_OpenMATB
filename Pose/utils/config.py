@@ -46,8 +46,8 @@ class Config:
     # Directory paths - can be overridden by environment variables
     # Use paths relative to the Pose directory (where this config file is located)
     _BASE_DIR: str = str(Path(__file__).parent.parent)  # Pose directory
-    RAW_DIR: str = os.getenv("POSE_RAW_DIR", str(Path(_BASE_DIR) / "data" / "raw_data" / "experimental_pose"))
-    OUT_BASE: str = os.getenv("POSE_OUT_BASE", str(Path(_BASE_DIR) / "data" / "processed_data" / "experimental"))
+    RAW_DIR: str = os.getenv("POSE_RAW_DIR", str(Path(_BASE_DIR) / "data" / "raw_data" / "baseline_pose")) # set to either "experimental_pose" or "baseline_pose"
+    OUT_BASE: str = os.getenv("POSE_OUT_BASE", str(Path(_BASE_DIR) / "data" / "processed_data" / "baseline")) # set to either "experimental" or "baseline"
 
     # Participant info file - can be overridden by environment variable
     PARTICIPANT_INFO_FILE: str = os.getenv("PARTICIPANT_INFO_FILE", "participant_info.csv")
@@ -85,16 +85,16 @@ CFG = Config()
 # These flags control which processing steps are executed in the pipeline
 
 # Core processing steps
-RUN_FILTER          = False  # Apply Butterworth low-pass filter to smooth signals
-RUN_MASK            = False  # Mask low-confidence landmarks
-RUN_INTERP_FILTER   = False  # Interpolate and filter masked regions
-RUN_NORM            = False  # Normalize coordinates (centering and scaling)
-RUN_TEMPLATES       = False  # Generate participant-specific templates
+RUN_FILTER          = True  # Apply Butterworth low-pass filter to smooth signals
+RUN_MASK            = True  # Mask low-confidence landmarks
+RUN_INTERP_FILTER   = True  # Interpolate and filter masked regions
+RUN_NORM            = True  # Normalize coordinates (centering and scaling)
+RUN_TEMPLATES       = True  # Generate participant-specific templates
 RUN_LINEAR          = True  # Run linear regression analysis
 
 # Feature extraction for different normalization methods
 RUN_FEATURES_PROCRUSTES_GLOBAL      = True  # Extract features using global Procrustes
-RUN_FEATURES_PROCRUSTES_PARTICIPANT = False  # Extract features using participant-specific Procrustes
+RUN_FEATURES_PROCRUSTES_PARTICIPANT = True  # Extract features using participant-specific Procrustes
 RUN_FEATURES_ORIGINAL               = True  # Extract features from original coordinates
 
 # Normalization options
@@ -104,9 +104,9 @@ SCALE_BY_INTEROCULAR = True  # Scale by inter-ocular distance (eye corner distan
 # Control what intermediate data is saved to disk
 
 # Save intermediate processing stages
-SAVE_REDUCED            = False  # Save reduced landmark set
-SAVE_MASKED             = False  # Save after confidence masking
-SAVE_INTERP_FILTERED    = False  # Save after interpolation and filtering
+SAVE_REDUCED            = True  # Save reduced landmark set
+SAVE_MASKED             = True  # Save after confidence masking
+SAVE_INTERP_FILTERED    = True  # Save after interpolation and filtering
 SAVE_NORM               = True  # Save normalized coordinates
 
 # Save per-frame features for different normalizations

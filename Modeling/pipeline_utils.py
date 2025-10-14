@@ -31,10 +31,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import (
     train_test_split,
     StratifiedKFold,
     cross_val_score,
+    RandomizedSearchCV,
 )
 from sklearn.metrics import (
     accuracy_score,
@@ -42,6 +44,7 @@ from sklearn.metrics import (
     f1_score,
     cohen_kappa_score,
     confusion_matrix,
+    precision_recall_fscore_support,
 )
 
 # Quiet down noisy libraries (e.g., pandas chained assignment warnings or sklearn user warnings)
@@ -67,6 +70,7 @@ ID_COLS = {
     "condition", "participant", "window_index",
     "window_start", "window_end", "minute",
     "window_start_s", "window_end_s",
+    "source", "t_start_frame", "t_end_frame",  # Metadata from CSV files
 }
 
 from sklearn.feature_selection import VarianceThreshold
@@ -126,18 +130,56 @@ def get_all_model_configs(
     return all_models
 
 
-def check_model_complete(model_name, output_dir):
+def get_config_suffix(config):
+    """
+    Generate a suffix for output filenames based on model configuration.
+
+    This allows different configurations to generate separate output files,
+    preventing overwrites when running with different settings.
+
+    Args:
+        config (dict): Model configuration dictionary
+
+    Returns:
+        str: Suffix string like "_backward_hyp" or "_forward_pca" or "_none"
+    """
+    if not config:
+        return ""
+
+    parts = []
+
+    # Feature selection method
+    feat_sel = config.get("feature_selection", None)
+    if feat_sel:
+        parts.append(str(feat_sel))
+    else:
+        parts.append("none")
+
+    # Hyperparameter tuning
+    if config.get("tune_hyperparameters", False):
+        parts.append("hyp")
+
+    # PCA
+    if config.get("use_pca", False):
+        parts.append("pca")
+
+    return "_" + "_".join(parts) if parts else ""
+
+
+def check_model_complete(model_name, output_dir, config=None):
     """
     Check if an experiment's JSON output already exists (used to resume/skip).
 
     Args:
         model_name (str): Unique experiment name.
         output_dir (str | Path): Directory where JSON results are saved.
+        config (dict, optional): Model configuration to generate filename suffix.
 
     Returns:
-        bool: True if {model_name}.json exists -> considered "complete".
+        bool: True if {model_name}{suffix}.json exists -> considered "complete".
     """
-    output_path = Path(output_dir) / f"{model_name}.json"
+    suffix = get_config_suffix(config) if config else ""
+    output_path = Path(output_dir) / f"{model_name}{suffix}.json"
     return output_path.exists()
 
 
@@ -326,7 +368,7 @@ def backward_elimination_rf_fast(X, y, cv_folds=5, random_state=0):
 
     Returns:
         tuple[list[str], float]: (selected_features, best_cv_score)
-    """    
+    """
     features, score = backward_elimination_permutation(
         X, y,
         cv_folds=cv_folds,
@@ -335,8 +377,70 @@ def backward_elimination_rf_fast(X, y, cv_folds=5, random_state=0):
         min_features=5,
         random_state=random_state,
     )
-    
+
     return features, score
+
+
+def tune_rf_hyperparameters(X, y, n_iter=50, cv_folds=3, random_state=0):
+    """
+    Tune Random Forest hyperparameters using RandomizedSearchCV.
+
+    Searches over key RF parameters that affect model complexity and performance:
+    - max_features: Number of features to consider for each split
+    - min_samples_split: Minimum samples required to split an internal node
+    - min_samples_leaf: Minimum samples required at each leaf node
+    - max_depth: Maximum depth of trees
+    - n_estimators: Number of trees in the forest
+
+    Args:
+        X (pd.DataFrame): Feature matrix
+        y (np.ndarray): Target labels
+        n_iter (int): Number of parameter settings sampled (default: 50)
+        cv_folds (int): Number of cross-validation folds (default: 3)
+        random_state (int): Random seed for reproducibility
+
+    Returns:
+        dict: Best hyperparameters found by RandomizedSearchCV
+    """
+    from scipy.stats import randint, uniform
+
+    # Define hyperparameter search space
+    param_distributions = {
+        'max_features': ['sqrt', 'log2', None],  # None means use all features
+        'min_samples_split': randint(2, 20),      # Minimum samples to split a node
+        'min_samples_leaf': randint(1, 10),       # Minimum samples at leaf
+        'max_depth': [None, 10, 20, 30, 50],      # Maximum tree depth
+        'n_estimators': randint(100, 500),        # Number of trees
+    }
+
+    # Base RF with fixed parameters
+    rf_base = RandomForestClassifier(
+        class_weight='balanced',
+        n_jobs=-1,
+        random_state=random_state
+    )
+
+    # Randomized search
+    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+
+    search = RandomizedSearchCV(
+        estimator=rf_base,
+        param_distributions=param_distributions,
+        n_iter=n_iter,
+        cv=cv,
+        scoring='balanced_accuracy',
+        n_jobs=-1,
+        random_state=random_state,
+        verbose=0
+    )
+
+    print(f"  Tuning RF hyperparameters ({n_iter} iterations, {cv_folds}-fold CV)...")
+    search.fit(X, y)
+
+    print(f"  Best CV score: {search.best_score_:.4f}")
+    print(f"  Best params: {search.best_params_}")
+
+    return search.best_params_
 
 
 # ============================================================================
@@ -558,7 +662,7 @@ def make_train_test_split(df, split_strategy, random_state=0):
     return df.loc[train_idx], df.loc[test_idx]
 
 
-def fit_and_evaluate(df, split_strategy, seed, config, selected_features=None):
+def fit_and_evaluate(df, split_strategy, seed, config, selected_features=None, tuned_rf_params=None):
     """
     Train and evaluate a single RF pipeline for a given seed and split.
 
@@ -572,6 +676,7 @@ def fit_and_evaluate(df, split_strategy, seed, config, selected_features=None):
         seed (int): Random seed.
         config (dict): Model config controlling scaler/PCA usage.
         selected_features (list[str] | None): Pre-selected feature names.
+        tuned_rf_params (dict | None): Tuned RF hyperparameters from RandomizedSearchCV.
 
     Returns:
         dict: { 'metrics': {...}, 'cm': confusion_matrix (normalized true) }
@@ -600,12 +705,21 @@ def fit_and_evaluate(df, split_strategy, seed, config, selected_features=None):
         pipeline_steps.append(("scaler", StandardScaler()))
 
     if config.get("use_pca", False):
+        # PCA requires non-NaN data, so add imputation before PCA
+        # Use median imputation (more robust to outliers than mean)
+        pipeline_steps.append(("imputer", SimpleImputer(strategy='median')))
+
         # Keep components that explain 'pca_variance' of variance
         pca_variance = config.get("pca_variance", 0.95)
         pipeline_steps.append(("pca", PCA(n_components=pca_variance)))
 
     # RF config per-seed to vary bootstrap randomness, etc.
     rf_kwargs = dict(RF_PARAMS)
+
+    # Apply tuned hyperparameters if provided
+    if tuned_rf_params:
+        rf_kwargs.update(tuned_rf_params)
+
     rf_kwargs["random_state"] = seed
     rf_kwargs.setdefault("n_jobs", -1)
     pipeline_steps.append(("rf", RandomForestClassifier(**rf_kwargs)))
@@ -624,9 +738,19 @@ def fit_and_evaluate(df, split_strategy, seed, config, selected_features=None):
         "test_kappa": cohen_kappa_score(y_test, y_pred, labels=LABELS),
     }
 
+    # Per-class metrics: precision, recall, F1 for L, M, H
+    precision, recall, f1, support = precision_recall_fscore_support(
+        y_test, y_pred, labels=LABELS, average=None, zero_division=0
+    )
+
+    for i, label in enumerate(LABELS):
+        metrics[f"test_precision_{label}"] = precision[i]
+        metrics[f"test_recall_{label}"] = recall[i]
+        metrics[f"test_f1_{label}"] = f1[i]
+
     # Confusion matrix normalized by true label counts; expressed in %
     cm = confusion_matrix(y_test, y_pred, labels=LABELS, normalize="true") * 100.0
-    
+
     return {"metrics": metrics, "cm": cm}
 
 
@@ -651,9 +775,10 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    output_path = output_dir / f"{name}.json"
-    
+
+    suffix = get_config_suffix(config)
+    output_path = output_dir / f"{name}{suffix}.json"
+
     # Respect existing results unless explicitly forcing/resuming
     if output_path.exists() and not force and not resume:
         print(f"[SKIP] {name}: already complete")
@@ -671,7 +796,29 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
         skip_every=config.get("skip_every")
     )
     print(f"Loaded data: {merged.shape}")
-    
+
+    # -----------------------------
+    # OPTIONAL HYPERPARAMETER TUNING
+    # -----------------------------
+    tuned_rf_params = {}
+    if config.get("tune_hyperparameters", False):
+        print("\nPerforming hyperparameter tuning (once for all seeds)...")
+        # Tune on the training fold of seed=0 to avoid test leakage
+        train_df, _ = make_train_test_split(merged, config["split_strategy"], random_state=0)
+        y_train = train_df["condition"].values
+        X_train = drop_identifier_columns(train_df).drop(columns=["condition"], errors="ignore")
+
+        # Tune hyperparameters
+        tuned_rf_params = tune_rf_hyperparameters(
+            X_train, y_train,
+            n_iter=config.get("tune_n_iter", 50),
+            cv_folds=config.get("tune_cv_folds", 3),
+            random_state=0
+        )
+
+        # Update RF_PARAMS for this experiment
+        print(f"\n  Using tuned parameters for all seeds in this experiment.")
+
     # -----------------------------
     # ONE-TIME FEATURE SELECTION
     # -----------------------------
@@ -704,15 +851,16 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
             split_strategy=config["split_strategy"],
             seed=seed,
             config=config,
-            selected_features=selected_features  # fixed across seeds
+            selected_features=selected_features,  # fixed across seeds
+            tuned_rf_params=tuned_rf_params if tuned_rf_params else None
         )
-        
+
         all_metrics.append(result["metrics"])
         all_cms.append(result["cm"])
     
     # Aggregate metrics across seeds
     metrics_df = pd.DataFrame(all_metrics)
-    
+
     aggregated_metrics = {
         "test_acc_mean": float(metrics_df["test_acc"].mean()),
         "test_acc_std": float(metrics_df["test_acc"].std(ddof=1)),
@@ -723,6 +871,15 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
         "test_kappa_mean": float(metrics_df["test_kappa"].mean()),
         "test_kappa_std": float(metrics_df["test_kappa"].std(ddof=1)),
     }
+
+    # Aggregate per-class metrics
+    for label in LABELS:
+        aggregated_metrics[f"test_precision_{label}_mean"] = float(metrics_df[f"test_precision_{label}"].mean())
+        aggregated_metrics[f"test_precision_{label}_std"] = float(metrics_df[f"test_precision_{label}"].std(ddof=1))
+        aggregated_metrics[f"test_recall_{label}_mean"] = float(metrics_df[f"test_recall_{label}"].mean())
+        aggregated_metrics[f"test_recall_{label}_std"] = float(metrics_df[f"test_recall_{label}"].std(ddof=1))
+        aggregated_metrics[f"test_f1_{label}_mean"] = float(metrics_df[f"test_f1_{label}"].mean())
+        aggregated_metrics[f"test_f1_{label}_std"] = float(metrics_df[f"test_f1_{label}"].std(ddof=1))
     
     # Average the confusion matrices elementwise (still percentages)
     cm_avg = np.mean(np.stack(all_cms, axis=0), axis=0)
@@ -734,6 +891,7 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
         "metrics": aggregated_metrics,
         "confusion_matrix": cm_avg.tolist(),
         "selected_features": selected_features if selected_features else [],
+        "tuned_rf_params": tuned_rf_params if tuned_rf_params else {},
         "n_features": len(selected_features) if selected_features else len(merged.columns) - len(ID_COLS),
         "n_seeds": n_seeds,
         "timestamp": datetime.now().isoformat(),
@@ -754,13 +912,14 @@ def run_single_model(name, config, output_dir, force=False, resume=False):
 #  Learning Curves
 # ============================================================================
 
-def run_learning_curve_experiment(config, feature_groups, default_config, output_dir, force=False):
+def run_learning_curve_experiment(config, feature_groups, default_config, output_dir, force=False, resume=False):
     """
     Execute a learning curve experiment with incremental time (minutes).
 
     Two-phase design:
       PHASE 1: For each minute 'm', perform feature selection ONCE using data
                available up to that minute (plus baseline if provided).
+               Optionally tune hyperparameters once per minute.
       PHASE 2: For each seed and minute, evaluate with the pre-selected features
                while purging overlapping windows near the split to avoid leakage.
 
@@ -769,53 +928,79 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
         implies 2 windows/min (adjust if your data differs).
       - test_parity ensures train/test windows alternate parity to reduce overlap.
       - 'adaptive_*' normalization modes prevent test-time knowledge of test stats.
+      - Supports resume: loads partial results and continues from last completed seed.
     """
     name = config["name"]
-    output_path = Path(output_dir) / f"{name}.json"
-    
-    if output_path.exists() and not force:
+    suffix = get_config_suffix(config)
+    output_path = Path(output_dir) / f"{name}{suffix}.json"
+    checkpoint_path = Path(output_dir) / f"{name}{suffix}_checkpoint.json"
+
+    if output_path.exists() and not force and not resume:
         print(f"[SKIP] {name}: already complete")
         return
     
     print(f"\n{'='*60}")
     print(f"Running Learning Curves: {name}")
     print(f"{'='*60}")
-    
-    # Determine if baseline ('pre') data is used for early minutes
-    has_baseline = config.get("baseline_groups") and len(config["baseline_groups"]) > 0
-    
+
+    # Determine if baseline data is used (either concatenation or aggregates)
+    baseline_concat_groups = config.get("baseline_concatenate_groups", [])
+    baseline_agg_groups = config.get("baseline_aggregate_groups", [])
+    has_baseline_concat = len(baseline_concat_groups) > 0
+    has_baseline_agg = len(baseline_agg_groups) > 0
+    has_any_baseline = has_baseline_concat or has_baseline_agg
+
     # Normalization strategy for learning curves
     norm_mode = config.get("normalization_mode", "standard")
     valid_modes = ["standard", "adaptive_per_trial", "adaptive_global"]
     if norm_mode not in valid_modes:
         raise ValueError(f"normalization_mode must be one of {valid_modes}, got '{norm_mode}'")
-    
-    # Baseline data implies we *cannot* do adaptive normalization (would leak baseline distribution)
-    if has_baseline and norm_mode != "standard":
+
+    # Baseline concatenation implies we *cannot* do adaptive normalization (would leak baseline distribution)
+    if has_baseline_concat and norm_mode != "standard":
         raise ValueError(
-            f"Adaptive normalization modes can only be used without baseline data."
+            f"Adaptive normalization modes can only be used without baseline_concatenate_groups."
         )
-    
+
     # Feature selection method (usually 'backward' here)
     selection_method = config.get("feature_selection", default_config.get("feature_selection"))
-    
+
+    # Hyperparameter tuning settings
+    tune_hyperparameters = config.get("tune_hyperparameters", default_config.get("tune_hyperparameters", False))
+
     print(f"Normalization mode: {norm_mode}")
     print(f"Feature selection: {selection_method if selection_method else 'None'}")
-    
+    print(f"Hyperparameter tuning: {tune_hyperparameters}")
+
     # -------------------------
-    # Load baseline (if any)
+    # Load baseline concatenation data (trial windows)
     # -------------------------
-    if has_baseline:
-        baseline_files = [feature_groups[g] for g in config["baseline_groups"]]
-        baseline_df = load_and_merge_features(baseline_files, skip_every=config.get("skip_every"))
-        print(f"Baseline data: {baseline_df.shape}")
-        
-        X_baseline = drop_identifier_columns(baseline_df).drop(columns=["condition"], errors="ignore")
-        y_baseline = baseline_df["condition"].values
+    if has_baseline_concat:
+        baseline_concat_files = [feature_groups[g] for g in baseline_concat_groups]
+        baseline_concat_df = load_and_merge_features(baseline_concat_files, skip_every=config.get("skip_every"))
+        print(f"Baseline concatenation data (trial windows): {baseline_concat_df.shape}")
+
+        X_baseline_concat = drop_identifier_columns(baseline_concat_df).drop(columns=["condition"], errors="ignore")
+        y_baseline_concat = baseline_concat_df["condition"].values
     else:
+        X_baseline_concat = None
+        y_baseline_concat = None
+
+    # -------------------------
+    # Load baseline aggregate features (participant-level stats)
+    # -------------------------
+    if has_baseline_agg:
+        baseline_agg_files = [feature_groups[g] for g in baseline_agg_groups]
+        baseline_agg_df = load_and_merge_features(baseline_agg_files, skip_every=config.get("skip_every"))
+        print(f"Baseline aggregate features (participant stats): {baseline_agg_df.shape}")
+    else:
+        baseline_agg_df = None
+
+    if not has_any_baseline:
         print("No baseline data - will start from minute 1")
-        X_baseline = None
-        y_baseline = None
+    else:
+        if has_baseline_agg:
+            print("Baseline aggregates present - can start from minute 0!")
     
     # -------------------------
     # Load experimental data
@@ -823,6 +1008,18 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
     exp_files = [feature_groups[g] for g in config["experimental_groups"]]
     exp_df = load_and_merge_features(exp_files, skip_every=config.get("skip_every"))
     print(f"Experimental data: {exp_df.shape}")
+
+    # Merge baseline aggregates as COLUMNS (participant-level features added to each window)
+    if has_baseline_agg:
+        # Merge on participant and condition to add baseline stats to each experimental window
+        merge_keys = ["participant", "condition"]
+        exp_df = pd.merge(exp_df, baseline_agg_df, on=merge_keys, how="left", suffixes=("", "_baseline_dup"))
+
+        # Clean any duplicate columns
+        dup_cols = [c for c in exp_df.columns if c.endswith("_baseline_dup")]
+        exp_df = exp_df.drop(columns=dup_cols, errors="ignore")
+
+        print(f"After merging baseline aggregates: {exp_df.shape}")
 
     # We rely on window_index to define temporal cutoffs; enforce presence
     if "window_index" not in exp_df.columns:
@@ -839,7 +1036,7 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
     # Experimental schedule
     minutes = config["minutes"]
     n_seeds = config.get("n_seeds", default_config.get("n_seeds", 20))
-    
+
     # Storage for per-minute metrics across seeds
     results = {
         m: {
@@ -850,66 +1047,122 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
         }
         for m in minutes
     }
+
+    # Resume logic: load checkpoint if it exists
+    start_seed = 0
+    minute_features = {}
+    minute_tuned_params = {}
+
+    if resume and checkpoint_path.exists():
+        print(f"\n[RESUME] Loading checkpoint from {checkpoint_path}")
+        with open(checkpoint_path, "r") as f:
+            checkpoint = json.load(f)
+
+        # Restore progress
+        results = checkpoint["results"]
+        minute_features = checkpoint.get("selected_features_per_minute", {})
+        minute_tuned_params = checkpoint.get("tuned_params_per_minute", {})
+        start_seed = checkpoint.get("last_completed_seed", 0) + 1
+
+        print(f"  Resuming from seed {start_seed}/{n_seeds}")
+
+        if start_seed >= n_seeds:
+            print(f"  All seeds already complete, finalizing...")
+            start_seed = n_seeds  # Will skip Phase 2 loop
     
     # ============================================================================
-    # PHASE 1: Feature selection ONCE PER MINUTE
+    # PHASE 1: Feature selection and hyperparameter tuning ONCE PER MINUTE
     # ============================================================================
-    print("\n" + "="*60)
-    print("PHASE 1: Feature Selection (once per minute)")
-    print("="*60)
-    
-    minute_features = {}  # cache selected feature names per minute
-    
-    for minute in minutes:
-        # window_cutoff defines how much training time we allow (2 windows per minute assumed)
-        window_cutoff = minute * 2
-        mask_train = exp_df["w_idx"] < window_cutoff
-        
-        if minute == 0:
-            # Only baseline defines minute 0; if no baseline, there's nothing to train/choose on
-            if not has_baseline:
-                continue
-            X_for_selection = X_baseline
-            y_for_selection = y_baseline
-        else:
-            exp_train = exp_df[mask_train]
-            if exp_train.empty:
-                continue
-            
-            X_exp_train = drop_identifier_columns(exp_train).drop(columns=["condition"], errors="ignore")
-            y_exp_train = exp_train["condition"].values
-            
-            # Optionally concatenate baseline with early experimental windows
-            if has_baseline:
-                X_for_selection = pd.concat([X_baseline, X_exp_train], ignore_index=True)
-                y_for_selection = np.concatenate([y_baseline, y_exp_train])
+    # Skip Phase 1 if resuming (features/params already loaded from checkpoint)
+    if not (resume and minute_features):
+        print("\n" + "="*60)
+        print("PHASE 1: Feature Selection & Hyperparameter Tuning (once per minute)")
+        print("="*60)
+
+        for minute in minutes:
+            # window_cutoff defines how much training time we allow (2 windows per minute assumed)
+            window_cutoff = minute * 2
+            mask_train = exp_df["w_idx"] < window_cutoff
+
+            if minute == 0:
+                # Minute 0 requires some baseline data (either concatenation or aggregates)
+                if not has_any_baseline:
+                    continue
+
+                # CASE A: Using baseline aggregate features only (from experimental windows)
+                if has_baseline_agg and not has_baseline_concat:
+                    # Use experimental windows at minute 0, but they only have baseline agg features
+                    # (experimental temporal features haven't accumulated yet)
+                    # Select only baseline aggregate columns for minute 0
+                    exp_baseline_cols = [c for c in exp_df.columns if "_baseline_" in c]
+                    if not exp_baseline_cols:
+                        print(f"Warning: No baseline aggregate columns found at minute 0")
+                        continue
+
+                    # Get all experimental windows but use only baseline aggregate features
+                    X_for_selection = exp_df[exp_baseline_cols]
+                    y_for_selection = exp_df["condition"].values
+
+                # CASE B: Using baseline concatenation (trial windows)
+                elif has_baseline_concat:
+                    X_for_selection = X_baseline_concat
+                    y_for_selection = y_baseline_concat
+
             else:
-                X_for_selection = X_exp_train
-                y_for_selection = y_exp_train
-        
-        # Execute feature selection once for this minute's available data
-        if selection_method == "backward":
-            print(f"\nMinute {minute}: Selecting features...")
-            selected_features, fs_score = backward_elimination_rf_fast(
-                X_for_selection, 
-                y_for_selection,
-                cv_folds=5,
-                random_state=42,
-            )
-            print(f"  → Selected {len(selected_features)} features (score: {fs_score:.4f})")
-            minute_features[minute] = selected_features
-        else:
-            # No FS: use whatever columns exist at selection time
-            minute_features[minute] = list(X_for_selection.columns)
+                exp_train = exp_df[mask_train]
+                if exp_train.empty:
+                    continue
+
+                X_exp_train = drop_identifier_columns(exp_train).drop(columns=["condition"], errors="ignore")
+                y_exp_train = exp_train["condition"].values
+
+                # Optionally concatenate baseline windows with experimental windows
+                if has_baseline_concat:
+                    X_for_selection = pd.concat([X_baseline_concat, X_exp_train], ignore_index=True)
+                    y_for_selection = np.concatenate([y_baseline_concat, y_exp_train])
+                else:
+                    X_for_selection = X_exp_train
+                    y_for_selection = y_exp_train
+
+            # Execute feature selection once for this minute's available data
+            if selection_method == "backward":
+                print(f"\nMinute {minute}: Selecting features...")
+                selected_features, fs_score = backward_elimination_rf_fast(
+                    X_for_selection,
+                    y_for_selection,
+                    cv_folds=5,
+                    random_state=42,
+                )
+                print(f"  → Selected {len(selected_features)} features (score: {fs_score:.4f})")
+                minute_features[minute] = selected_features
+            else:
+                # No FS: use whatever columns exist at selection time
+                minute_features[minute] = list(X_for_selection.columns)
+
+            # Hyperparameter tuning for this minute (if enabled)
+            if tune_hyperparameters:
+                print(f"  Tuning hyperparameters for minute {minute}...")
+                tuned_params = tune_rf_hyperparameters(
+                    X_for_selection[minute_features[minute]] if minute in minute_features else X_for_selection,
+                    y_for_selection,
+                    n_iter=config.get("tune_n_iter", default_config.get("tune_n_iter", 30)),
+                    cv_folds=config.get("tune_cv_folds", default_config.get("tune_cv_folds", 5)),
+                    random_state=42
+                )
+                minute_tuned_params[minute] = tuned_params
+            else:
+                minute_tuned_params[minute] = {}
+    else:
+        print(f"\n[RESUME] Using cached feature selection and hyperparameters from checkpoint")
     
     # ============================================================================
     # PHASE 2: Evaluate across all seeds using pre-selected features
     # ============================================================================
     print("\n" + "="*60)
-    print("PHASE 2: Evaluation (20 seeds per minute)")
+    print(f"PHASE 2: Evaluation ({n_seeds} seeds per minute)")
     print("="*60 + "\n")
-    
-    for seed in tqdm(range(n_seeds), desc=f"{name}"):
+
+    for seed in tqdm(range(start_seed, n_seeds), desc=f"{name}", initial=start_seed, total=n_seeds):
         for minute in minutes:
             window_cutoff = minute * 2
 
@@ -942,23 +1195,38 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
             
             exp_train = exp_df[mask_train]
             exp_test = exp_df[mask_test]
-            
+
             # Build training set (optionally include baseline)
             if minute == 0:
-                if not has_baseline:
+                if not has_any_baseline:
                     continue
-                X_train = X_baseline
-                y_train = y_baseline
+
+                # CASE A: Using baseline aggregate features only
+                if has_baseline_agg and not has_baseline_concat:
+                    # Use experimental windows but only baseline aggregate features
+                    exp_baseline_cols = [c for c in exp_df.columns if "_baseline_" in c]
+                    if not exp_baseline_cols:
+                        continue
+
+                    X_train = exp_df[exp_baseline_cols]
+                    y_train = exp_df["condition"].values
+
+                # CASE B: Using baseline concatenation (trial windows)
+                elif has_baseline_concat:
+                    X_train = X_baseline_concat
+                    y_train = y_baseline_concat
+
             else:
                 if exp_train.empty:
                     continue
-                
+
                 X_exp_train = drop_identifier_columns(exp_train).drop(columns=["condition"], errors="ignore")
                 y_exp_train = exp_train["condition"].values
-                
-                if has_baseline:
-                    X_train = pd.concat([X_baseline, X_exp_train], ignore_index=True)
-                    y_train = np.concatenate([y_baseline, y_exp_train])
+
+                # Optionally concatenate baseline windows with experimental windows
+                if has_baseline_concat:
+                    X_train = pd.concat([X_baseline_concat, X_exp_train], ignore_index=True)
+                    y_train = np.concatenate([y_baseline_concat, y_exp_train])
                 else:
                     X_train = X_exp_train
                     y_train = y_exp_train
@@ -1046,9 +1314,14 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
             # -----------------------
             from sklearn.ensemble import RandomForestClassifier
             rf_kwargs = dict(RF_PARAMS)
+
+            # Apply tuned hyperparameters for this minute if available
+            if minute in minute_tuned_params and minute_tuned_params[minute]:
+                rf_kwargs.update(minute_tuned_params[minute])
+
             rf_kwargs["random_state"] = seed
             rf_kwargs.setdefault("n_jobs", -1)
-            
+
             clf = RandomForestClassifier(**rf_kwargs)
             clf.fit(X_train_scaled, y_train)
             y_pred = clf.predict(X_test_scaled)
@@ -1059,28 +1332,57 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
             results[minute]["F1"].append(f1_score(y_test, y_pred, labels=LABELS, average="weighted"))
             results[minute]["Kappa"].append(cohen_kappa_score(y_test, y_pred, labels=LABELS))
             results[minute]["n_features"].append(len(X_train.columns))
+
+        # Save checkpoint after each seed completes
+        if resume or force:
+            checkpoint_data = {
+                "name": name,
+                "config": config,
+                "has_baseline_concat": has_baseline_concat,
+                "has_baseline_agg": has_baseline_agg,
+                "normalization_mode": norm_mode,
+                "feature_selection": selection_method,
+                "tune_hyperparameters": tune_hyperparameters,
+                "minutes": minutes,
+                "results": results,
+                "selected_features_per_minute": {str(m): minute_features.get(m, []) for m in minutes},
+                "tuned_params_per_minute": {str(m): minute_tuned_params.get(m, {}) for m in minutes},
+                "last_completed_seed": seed,
+                "n_seeds": n_seeds,
+            }
+            with open(checkpoint_path, "w") as f:
+                json.dump(checkpoint_data, f, indent=2)
     
-    # Save the full learning-curve payload (including selected features per minute)
+    # Save the full learning-curve payload (including selected features and tuned params per minute)
     import json
     from datetime import datetime
     output_data = {
         "name": name,
         "config": config,
-        "has_baseline": has_baseline,
+        "has_baseline_concat": has_baseline_concat,
+        "has_baseline_agg": has_baseline_agg,
         "normalization_mode": norm_mode,
         "feature_selection": selection_method,
+        "tune_hyperparameters": tune_hyperparameters,
         "minutes": minutes,
         "results": results,
         "selected_features_per_minute": {
             str(m): minute_features.get(m, []) for m in minutes
         },
+        "tuned_params_per_minute": {
+            str(m): minute_tuned_params.get(m, {}) for m in minutes
+        },
         "n_seeds": n_seeds,
         "timestamp": datetime.now().isoformat(),
     }
-    
+
     with open(output_path, "w") as f:
         json.dump(output_data, f, indent=2)
-    
+
+    # Clean up checkpoint file after successful completion
+    if checkpoint_path.exists():
+        checkpoint_path.unlink()
+
     print(f"\n✓ Completed: {name}")
     
     # Console summary of BA curve (mean ± std), plus average feature count used
@@ -1096,6 +1398,31 @@ def run_learning_curve_experiment(config, feature_groups, default_config, output
             std_feats = np.std(results[minute]["n_features"], ddof=1) if len(results[minute]["n_features"]) > 1 else 0
             print(f"{minute:<10} {mean_acc*100:.2f}%    {std_acc*100:.2f}%    {n_samples:<10} "
                   f"{mean_feats:.1f} ± {std_feats:.1f}")
+
+    # Log to experiment_log.csv for easy comparison with main RF models
+    # Use the final minute's metrics as representative performance
+    if minutes and results[minutes[-1]]["BalancedAcc"]:
+        final_minute = minutes[-1]
+        log_results = {
+            "name": name,
+            "config": {
+                "split_strategy": "learning_curve",
+                "normalization_mode": norm_mode,
+                "final_minute": final_minute,
+            },
+            "metrics": {
+                "test_bal_acc_mean": np.mean(results[final_minute]["BalancedAcc"]),
+                "test_bal_acc_std": np.std(results[final_minute]["BalancedAcc"], ddof=1),
+                "test_f1_mean": np.mean(results[final_minute]["F1"]),
+                "test_f1_std": np.std(results[final_minute]["F1"], ddof=1),
+                "test_kappa_mean": np.mean(results[final_minute]["Kappa"]),
+                "test_kappa_std": np.std(results[final_minute]["Kappa"], ddof=1),
+            },
+            "n_features": int(np.mean(results[final_minute]["n_features"])),
+            "n_seeds": n_seeds,
+            "timestamp": datetime.now().isoformat(),
+        }
+        log_to_csv(name, log_results, output_dir)
 
 
 # ============================================================================

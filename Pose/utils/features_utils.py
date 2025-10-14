@@ -399,10 +399,10 @@ def compute_linear_from_perframe_dir(per_frame_dir: Path,
             dist_like = is_distance_like_metric(base)
 
             if scale_by_interocular and dist_like and np.isfinite(io).any():
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    arr2 = arr / io
-                    bad = ~np.isfinite(arr2) | (io < 1e-6)
-                    arr2[bad] = arr[bad]
+                # MJR FIX: Pre-check for safe division to avoid unnecessary inf/nan computation
+                arr2 = arr.copy()                           # Start with original values
+                good = np.isfinite(io) & (io >= 1e-6)       # Pre-identify safe indices
+                arr2[good] = arr[good] / io[good]           # Only divide where safe
                 scaled[k] = arr2
             else:
                 scaled[k] = arr
@@ -431,6 +431,12 @@ def compute_linear_from_perframe_dir(per_frame_dir: Path,
                     base[f"{k}_rms"] = np.nan
                     if not norm_is_z:
                         base[f"{k}_mean"] = np.nan
+                    # NEW MJR ADDITION - Set NaN for new statistical features
+                    base[f"{k}_std"] = np.nan
+                    base[f"{k}_median"] = np.nan
+                    base[f"{k}_p25"] = np.nan
+                    base[f"{k}_p75"] = np.nan
+                    base[f"{k}_autocorr1"] = np.nan
                     continue
 
                 base[f"{k}_min"] = float(np.min(seg))
@@ -438,6 +444,22 @@ def compute_linear_from_perframe_dir(per_frame_dir: Path,
                 base[f"{k}_rms"] = float(np.sqrt(np.mean(seg**2)))
                 if not norm_is_z:
                     base[f"{k}_mean"] = float(np.mean(seg))
+
+                # NEW MJR ADDITION - Standard deviation (captures variability around mean)
+                base[f"{k}_std"] = float(np.std(seg))
+
+                # NEW MJR ADDITION - Median (robust central tendency, less sensitive to outliers)
+                base[f"{k}_median"] = float(np.median(seg))
+
+                # NEW MJR ADDITION - Percentiles (25th and 75th quartiles)
+                base[f"{k}_p25"] = float(np.percentile(seg, 25))
+                base[f"{k}_p75"] = float(np.percentile(seg, 75))
+
+                # NEW MJR ADDITION - Lag-1 autocorrelation (temporal smoothness/persistence)
+                if len(seg) > 1:
+                    base[f"{k}_autocorr1"] = float(np.corrcoef(seg[:-1], seg[1:])[0, 1])
+                else:
+                    base[f"{k}_autocorr1"] = np.nan
 
             rows.append(base)
 

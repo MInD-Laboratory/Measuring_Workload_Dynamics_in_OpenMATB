@@ -1,0 +1,71 @@
+{
+  "name": "combined_procrustes_participant",
+  "config": {
+    "n_seeds": 15,
+    "feature_selection": "None",
+    "selection_level": "metric",
+    "selection_stopping": "drop",
+    "use_pca": false,
+    "pca_variance": 0.95,
+    "write_cm": true,
+    "tune_hyperparameters": false,
+    "tune_n_iter": 30,
+    "tune_cv_folds": 5,
+    "name": "combined_procrustes_participant",
+    "feature_groups": [
+      "procrustes_linear_exp",
+      "procrustes_rqa_exp"
+    ],
+    "split_strategy": "participant"
+  },
+  "metrics": {
+    "test_acc_mean": 0.433959325512599,
+    "test_acc_std": 0.018612464987399616,
+    "test_bal_acc_mean": 0.4336536249579729,
+    "test_bal_acc_std": 0.01881748742891919,
+    "test_f1_mean": 0.426748555165209,
+    "test_f1_std": 0.018810730421142785,
+    "test_kappa_mean": 0.1507329306379405,
+    "test_kappa_std": 0.02809923101836568,
+    "test_precision_L_mean": 0.46016877419828217,
+    "test_precision_L_std": 0.034511376246136344,
+    "test_recall_L_mean": 0.47650793650793655,
+    "test_recall_L_std": 0.04121835267101028,
+    "test_f1_L_mean": 0.4665311431551253,
+    "test_f1_L_std": 0.02410927180530317,
+    "test_precision_M_mean": 0.35449488506831633,
+    "test_precision_M_std": 0.031655964140900134,
+    "test_recall_M_mean": 0.286675160588204,
+    "test_recall_M_std": 0.05783732035162949,
+    "test_f1_M_mean": 0.31382511608894836,
+    "test_f1_M_std": 0.03896874007554394,
+    "test_precision_H_mean": 0.4716111541492762,
+    "test_precision_H_std": 0.033054932104553625,
+    "test_recall_H_mean": 0.5377777777777778,
+    "test_recall_H_std": 0.08673740603113662,
+    "test_f1_H_mean": 0.4991851191707502,
+    "test_f1_H_std": 0.043252418075592526
+  },
+  "confusion_matrix": [
+    [
+      47.650793650793645,
+      25.968253968253965,
+      26.380952380952383
+    ],
+    [
+      36.829749960184735,
+      28.66751605882041,
+      34.502733980994854
+    ],
+    [
+      19.93650793650794,
+      26.28571428571429,
+      53.77777777777778
+    ]
+  ],
+  "selected_features": [],
+  "tuned_rf_params": {},
+  "n_features": 448,
+  "n_seeds": 15,
+  "timestamp": "2025-10-14T11:50:26.459889"
+}
