@@ -90,6 +90,9 @@ dmypy.json
 # macOS
 .DS_Store
 
+#RQA
+rqa/
+
 # Ignore raw data and intermediate processing files
 data/raw_data/
 data/processed_data/**
